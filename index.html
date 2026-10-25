@@ -2815,10 +2815,11 @@ function pintarOrdenes() {
 
     h += '<div class="cmd ' + colorDe(o.estado) +
          (o.atorada_desde && !cerrada ? ' trabada' : '') + '">' +
-      /* El numero de orden, porque la tarjeta se titulaba con la CANTIDAD y
-         de ahi salia pedirme "que pasa con las ordenes 20, 18 y 40" cuando
-         eran las ordenes 14, 17 y 28 -- las tres del mismo producto, que solo
-         se distinguian por cuantas cajas eran. */
+      /* El numero de orden. La tarjeta no lo traia: solo el nombre y, en
+         grande, las cajas pedidas. De ahi salio pedirme "que pasa con las
+         ordenes 20, 18 y 40", que eran las ordenes 14, 17 y 28. Y dos
+         tarjetas distintas decian "20" -- la 14, cerrada, y la 40, apenas
+         planeada y de otro producto. "La orden 20" no identificaba nada. */
       '<div class="qq">' + esc(qSeHace) +
         ' <small style="opacity:.55;font-weight:normal">orden ' + o.id +
         '</small></div>' +
