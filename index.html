@@ -210,7 +210,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v62</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v63</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -590,7 +590,14 @@
            cocina: está decidiendo qué hay que producir. Y es él quien dice a
            dónde va la orden -- a una cocina o derecho al empaque. -->
       <div class="caja" id="cajaPedir">
-        <h2>Pedir una tanda</h2>
+        <!-- El formulario va DETRÁS de un botón. Abierto de par en par
+             empujaba "¿Dónde se va a trabajar?" fuera de la pantalla del
+             teléfono: para entrar a una cocina había que pasar de largo doce
+             campos que casi nunca se tocan. Quien llega a producir va a un
+             lugar; pedir es lo de menos veces, y por eso es lo que se
+             esconde. -->
+        <button class="p" id="btnPedirTanda" onclick="verPedir()">Pedir una tanda</button>
+        <div id="formPedir" class="oculto">
         <label>¿Qué se va a hacer?</label>
         <select id="peProducto" onchange="proponerDestino()"></select>
         <div class="fila">
@@ -619,6 +626,7 @@
           hoy se dice por teléfono y luego nadie se acuerda.
         </div>
         <button class="p" onclick="pedirTanda()">Mandar la orden</button>
+        </div>
       </div>
 
       <div class="caja" id="prodSitios">
@@ -2604,7 +2612,19 @@ function pintarOrdenes() {
          cuentan las bolsas. Antes salía desde que se surtía: pedirle a quien
          está friendo que capture cuántas bolsas buenas salieron es pedirle
          un número que todavía no existe. */
-      h += '<div style="margin-top:10px">';
+      /* ESTE formulario y el de "Capturar lo que salió" preguntan lo mismo
+         -- bolsas buenas, merma, por qué -- y los dos salían juntos en la
+         misma tarjeta, uno abierto y el otro escondido. Se llenaba el que
+         se veía y se picaba el botón del otro, y desde afuera eso se ve
+         igual que un botón descompuesto. Ahora cada camino tiene su botón
+         y dice a dónde lleva. */
+      h += '<button class="p g chico" style="width:100%;margin-top:10px" ' +
+        'onclick="verCaja(\'cie\',' + o.id + ')">Cerrarla aquí mismo, sin bodega</button>';
+      h += '<div id="cie' + o.id + '" class="oculto" style="margin-top:10px">' +
+        '<div class="ayuda" style="margin-bottom:8px">' +
+        'Este camino <b>no pasa por bodega</b>: el inventario entra con el ' +
+        'número que se capture aquí. Es el único que pide las revisiones, las ' +
+        'horas y el gasto, que son los que sacan el <b>costo por bolsa</b>.</div>';
       ctrls = (o.rc_recetas && o.rc_recetas.rc_receta_controles) ? o.rc_recetas.rc_receta_controles : [];
       if (ctrls.length) {
         h += '<h3 style="margin-top:4px">Revisiones obligatorias</h3>';
@@ -5180,6 +5200,25 @@ function proponerDestino() {
   }
 }
 
+/* Abre y cierra el formulario de pedir. Se trae a la vista al abrir, por lo
+   mismo que las cajas de las tandas: si se abre debajo del borde, uno pica y
+   pica creyendo que el botón no sirve. */
+function verPedir() {
+  var d = document.getElementById('formPedir');
+  var b = document.getElementById('btnPedirTanda');
+  var abrir = (d.className === 'oculto');
+  d.className = abrir ? '' : 'oculto';
+  b.innerHTML = abrir ? 'Cerrar sin pedir nada' : 'Pedir una tanda';
+  if (abrir) {
+    try { d.scrollIntoView({ block: 'start' }); } catch (e) { d.scrollIntoView(); }
+  }
+}
+
+function cerrarPedir() {
+  var d = document.getElementById('formPedir');
+  if (d && d.className !== 'oculto') { verPedir(); }
+}
+
 function pedirTanda() {
   if (sinSenalAviso()) { return; }
   var destino = parseInt(document.getElementById('peDestino').value, 10);
@@ -5214,6 +5253,9 @@ function pedirTanda() {
     document.getElementById('peCuanto').value = '';
     var ei = document.getElementById('peInstr');
     if (ei) { ei.value = ''; }
+    /* Se cierra solo: ya quedó pedida, y así vuelven a verse los lugares
+       sin tener que deslizar. El aviso de arriba dice qué pasó. */
+    cerrarPedir();
     cargarOrdenes();
   });
 }
@@ -5308,6 +5350,7 @@ function prodVolver(nivel) {
     /* Pedir se ve en el primer nivel y SÓLO ahí: adentro de una cocina
        estorba, porque ahí lo que toca es trabajar las que ya llegaron. */
     document.getElementById('cajaPedir').className = 'caja';
+    cerrarPedir();
     pintarPedir();
   } else {
     document.getElementById('prodAreas').className = 'caja';
