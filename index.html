@@ -210,7 +210,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v64</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v65</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -1140,6 +1140,7 @@ function crearCuenta() {
 }
 
 function arrancar() {
+  arrancarLatido();
   req('GET', '/rest/v1/rc_perfiles?select=*&id=eq.' + YO.id, null, function (ok, d) {
     if (!ok || !d || !d.length) {
       decir('Tu cuenta entró pero no tiene gafete. El dueño tiene que activarla.', true, 'avisoEntrar');
@@ -2403,13 +2404,136 @@ function crearOrden() {
 function cargarOrdenes() {
   req('GET', '/rest/v1/rc_ordenes?select=*,rc_recetas(nombre,rendimiento_esperado,producto_id,es_maquila,cliente_id,' +
       'rc_receta_insumos(insumo_id,producto_id,cantidad,unidad),rc_receta_controles(id,descripcion,tipo,obligatorio)),' +
-      'rc_orden_resultados(id,lote_id,producto_id,bolsas_buenas,merma,motivo_merma,es_coproducto)' +
+      'rc_orden_resultados(id,lote_id,producto_id,bolsas_buenas,merma,motivo_merma,es_coproducto),' +
+      'rc_orden_etapas(etapa,cuando,minutos_plan)' +
       '&rc_recetas.rc_receta_insumos.activo=is.true&rc_recetas.rc_receta_controles.activo=is.true' +
       '&order=id.desc&limit=25',
     null, function (ok, d) {
       ORDENES = ok && d ? d : [];
       pintarOrdenes(); cargarCostos(); pintarInicio();
     });
+}
+
+/* ============================================================================
+   EL TIEMPO DE CADA ETAPA
+   ============================================================================
+   rc_orden_etapas ya venia guardando la hora de cada paso desde que se
+   escribio, y nadie la leia. Esto la lee.
+
+   NADA DE setTimeout PARA LA ALARMA, y la razon no es gusto: un temporizador
+   pierde lo acumulado cada vez que se vuelve a crear, y aqui la pantalla se
+   repinta cada vez que llega una orden. Un reposo de 4 horas no llegaria
+   nunca a cumplirse, y lo peor es que no dejaria rastro: se veria igualito a
+   "nadie lo uso".
+
+   La alarma se SACA de la hora guardada -- hora de inicio mas los minutos que
+   se le dieron, contra la hora de ahorita. Asi aguanta que cierren la app,
+   que se quede sin senal, y que la tanda la empiece un telefono y la termine
+   otro.
+
+   (De una nota de Spencer: "un temporizador no debe depender de lo que
+   reporta", en el-temporizador-que-se-reinicia-antes-de-dispararse.)
+   ========================================================================== */
+
+/* El nombre del TIEMPO, que no es el nombre del estado: lo que dura la etapa
+   'proceso' es el dorado, y lo que dura 'empaque' es el empacado. */
+function nombreDelTiempo(e) {
+  if (e === 'planeada') { return 'esperando a que la tomaran'; }
+  if (e === 'surtida')  { return 'desde que la tomaron'; }
+  if (e === 'proceso')  { return 'dorado'; }
+  if (e === 'reposo')   { return 'reposo'; }
+  if (e === 'empaque')  { return 'empacado'; }
+  if (e === 'bodega')   { return 'esperando a que bodega contara'; }
+  return e;
+}
+
+/* 95 -> "1 h 35 min". En horas y minutos porque asi se dice en la cocina. */
+/* Y el nombre de lo que esta pasando AHORITA, que tampoco es el mismo: la
+   etapa 'proceso' que ya termino fue "el dorado"; la que sigue corriendo
+   esta "dorandose". */
+function nombreCorriendo(e) {
+  if (e === 'planeada') { return 'esperando a que la tomen'; }
+  if (e === 'surtida')  { return 'tomada, sin empezar'; }
+  if (e === 'proceso')  { return 'dorándose'; }
+  if (e === 'reposo')   { return 'reposando'; }
+  if (e === 'empaque')  { return 'empacándose'; }
+  if (e === 'bodega')   { return 'esperando a que bodega la cuente'; }
+  return e;
+}
+
+function reloj(min) {
+  var m = Math.round(min), h;
+  if (m < 0) { m = 0; }
+  if (m < 60) { return m + ' min'; }
+  h = Math.floor(m / 60);
+  m = m - h * 60;
+  return h + ' h' + (m ? ' ' + m + ' min' : '');
+}
+
+/* Cuanto duro cada etapa ya terminada, y cuanto lleva la de ahorita. Una
+   etapa termina cuando empieza la siguiente; la ultima sigue corriendo. */
+function tiemposDe(o) {
+  var l = (o.rc_orden_etapas || []).slice(0), r = [], i, fin, ini;
+  l.sort(function (a, b) {
+    return new Date(a.cuando).getTime() - new Date(b.cuando).getTime();
+  });
+  for (i = 0; i < l.length; i++) {
+    ini = new Date(l[i].cuando).getTime();
+    fin = (i + 1 < l.length) ? new Date(l[i + 1].cuando).getTime() : 0;
+    r.push({
+      etapa: l[i].etapa,
+      corriendo: !fin,
+      minutos: Math.floor(((fin || new Date().getTime()) - ini) / 60000),
+      plan: l[i].minutos_plan ? parseInt(l[i].minutos_plan, 10) : 0
+    });
+  }
+  return r;
+}
+
+/* El renglon que se ve en la tarjeta. Se saca aparte porque se vuelve a
+   pintar SOLO el, cada minuto, sin tocar el resto de la tarjeta: repintar la
+   lista entera borraria lo que alguien este tecleando en ese momento. */
+function textoDeTiempos(o) {
+  var t = tiemposDe(o), i, x, hechas = [], ahora = '', falta;
+  for (i = 0; i < t.length; i++) {
+    x = t[i];
+    if (!x.corriendo) {
+      if (x.etapa === 'proceso' || x.etapa === 'reposo' || x.etapa === 'empaque') {
+        hechas.push(esc(nombreDelTiempo(x.etapa)) + ' <b>' + reloj(x.minutos) + '</b>');
+      }
+      continue;
+    }
+    if (o.estado === 'cerrada' || o.estado === 'cancelada') { continue; }
+    ahora = 'Lleva <b>' + reloj(x.minutos) + '</b> ' + esc(nombreCorriendo(x.etapa)) + '.';
+    if (x.plan > 0) {
+      falta = x.plan - x.minutos;
+      ahora = falta > 0
+        ? 'Reposando. <b>Le faltan ' + reloj(falta) + '</b> — se le dieron ' +
+          reloj(x.plan) + '.'
+        : '<b>YA SE CUMPLI\u00d3 EL REPOSO</b> \u2014 se le dieron ' + reloj(x.plan) +
+          ' y lleva ' + reloj(x.minutos) +
+          (falta < -30 ? '. <b>Ya se pasó ' + reloj(-falta) + '.</b>' : '. Ya se puede empacar.');
+    }
+  }
+  if (!hechas.length && !ahora) { return ''; }
+  return (ahora ? '<div class="d">' + ahora + '</div>' : '') +
+         (hechas.length ? '<div class="d">' + hechas.join(' \u00b7 ') + '</div>' : '');
+}
+
+/* UN SOLO latido, creado UNA VEZ. No carga nada adentro: nada mas vuelve a
+   escribir el renglon del tiempo, que se calcula desde la hora guardada. Si
+   se creara dentro de pintarOrdenes se reiniciaria en cada repintada. */
+var LATIDO = null;
+function arrancarLatido() {
+  if (LATIDO) { return; }
+  LATIDO = window.setInterval(refrescarTiempos, 60000);
+}
+function refrescarTiempos() {
+  var i, el;
+  for (i = 0; i < ORDENES.length; i++) {
+    el = document.getElementById('tmp' + ORDENES[i].id);
+    if (el) { el.innerHTML = textoDeTiempos(ORDENES[i]); }
+  }
 }
 
 /* El color de cada estado. Que desde la puerta se vea qué falta. */
@@ -2527,6 +2651,10 @@ function pintarOrdenes() {
        cien veces al día con las manos ocupadas. Esto es para cuando NO va a
        seguir -- lo de menos veces -- y apiladas como botones grandes
        convertían la comanda en una torre de botones iguales. */
+    /* El renglon del tiempo. Va en su propio div con id para poder
+       reescribirlo solo a el cada minuto. */
+    h += '<div id="tmp' + o.id + '">' + textoDeTiempos(o) + '</div>';
+
     var salidas = '';
     if (!cerrada && !o.atorada_desde) {
       salidas += '<button onclick="verAtorar(' + o.id + ')">No se puede</button>';
@@ -2535,6 +2663,28 @@ function pintarOrdenes() {
       salidas += '<button onclick="cancelarOrden(' + o.id + ')">Cancelarla</button>';
     }
     if (salidas) { h += '<div class="salidas">' + salidas + '</div>'; }
+
+    /* ¿CUÁNTO TIENE QUE REPOSAR? Se pregunta al mandarla a reposar, no antes:
+       es el único momento en que alguien lo sabe de verdad. Si se deja vacío
+       no pasa nada -- la tanda simplemente no trae alarma. */
+    if (ps && ps.a === 'reposo') {
+      h += '<div id="rep' + o.id + '" class="oculto" style="margin-top:9px">' +
+        '<label>¿Cuánto tiene que reposar?</label>' +
+        '<div class="rapidos">' +
+          '<button class="rap" onclick="ponMinutos(' + o.id + ',30)">30 min</button>' +
+          '<button class="rap" onclick="ponMinutos(' + o.id + ',60)">1 hora</button>' +
+          '<button class="rap" onclick="ponMinutos(' + o.id + ',120)">2 horas</button>' +
+          '<button class="rap" onclick="ponMinutos(' + o.id + ',240)">4 horas</button>' +
+          '<button class="rap" onclick="ponMinutos(' + o.id + ',480)">Toda la noche</button>' +
+        '</div>' +
+        '<label>O pónselo tú, en minutos</label>' +
+        '<input type="number" inputmode="decimal" id="repM' + o.id + '" placeholder="240">' +
+        '<div class="ayuda">Cuando se cumpla, <b>la tanda lo dice sola en su ' +
+          'tarjeta</b>. Déjalo vacío si no hay un tiempo fijo.</div>' +
+        '<button class="p chico" style="width:100%;margin-top:9px" onclick="ponerAReposar(' +
+          o.id + ')">Ya está dorado, a reposar</button>' +
+      '</div>';
+    }
 
     /* LO QUE SALIÓ, que lo declara la cocina. Todavía no es inventario. */
     if (o.estado === 'empaque') {
@@ -5320,22 +5470,40 @@ function cocinaDelSitio(sitio) {
 
 /* Avanzar una etapa. El último paso NO avanza solo: lleva a capturar cuántas
    bolsas buenas salieron, porque de ahí sale el inventario de verdad. */
-function avanzarTanda(id, aEstado, nombre) {
+/* Los botones de minutos nada más llenan la casilla. Escribir con las manos
+   llenas de masa no pasa: si hay que teclear, no se anota. */
+function ponMinutos(id, m) {
+  var el = document.getElementById('repM' + id);
+  if (el) { el.value = m; }
+}
+function ponerAReposar(id) {
+  var m = num((document.getElementById('repM' + id) || {}).value);
+  avanzarTanda(id, 'reposo', 'reposo', m > 0 ? Math.round(m) : null);
+}
+
+function avanzarTanda(id, aEstado, nombre, minutos) {
   if (sinSenalAviso()) { return; }
   /* Los dos últimos pasos no son un cambio de estado: piden un número.
      'bodega'  -> la cocina declara lo que salió
      'cerrada' -> la bodega cuenta lo que llegó, y ESO es el inventario */
   if (aEstado === 'bodega')  { verCaja('cap', id); return; }
   if (aEstado === 'cerrada') { verCaja('rec', id); return; }
+  /* Y el reposo pregunta CUÁNTO antes de avanzar. Se reconoce porque viene
+     sin el cuarto dato: el botón de la tarjeta manda tres. */
+  if (aEstado === 'reposo' && minutos === undefined) { verCaja('rep', id); return; }
   var k = llaveUnica();
   hacer('Paso de la tanda ' + nombre, [
     paso('PATCH', '/rest/v1/rc_ordenes?id=eq.' + id, { estado: aEstado }, null),
     paso('POST', '/rest/v1/rc_orden_etapas',
-      { orden_id: id, etapa: aEstado, clave_cliente: k }, k)
+      { orden_id: id, etapa: aEstado, clave_cliente: k,
+        minutos_plan: (minutos > 0 ? minutos : null) }, k)
   ], function (ok) {
     if (ok) {
       decir(aEstado === 'reposo'
-        ? 'Anotado: está en <b>reposo</b>. No se empaca hasta que enfríe — si se embolsa caliente, se humedece adentro de la bolsa.'
+        ? 'Anotado: está en <b>reposo</b>' +
+          (minutos > 0 ? ' por <b>' + reloj(minutos) + '</b>. La tarjeta va a ' +
+                         'decir sola cuando se cumpla.' : '.') +
+          ' No se empaca hasta que enfríe — si se embolsa caliente, se humedece adentro de la bolsa.'
         : 'Anotado. Ahora está en <b>' + esc(comoSeLlama(aEstado)) + '</b>.', false);
     }
     cargarOrdenes();
