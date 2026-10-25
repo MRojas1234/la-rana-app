@@ -205,6 +205,15 @@
     <input id="clave" type="password" autocomplete="current-password"
            autocapitalize="off" autocorrect="off" spellcheck="false">
     <button class="p g chico" id="btnVerClave" style="width:auto;margin-bottom:8px">Ver lo que escribí</button>
+    <label style="display:block;margin:4px 0 2px;font-weight:normal;cursor:pointer">
+      <input type="checkbox" id="miTel"
+             style="width:auto;display:inline-block;margin:0 7px 0 0;vertical-align:middle">
+      <span style="vertical-align:middle">Este teléfono es mío — déjame adentro</span>
+    </label>
+    <div class="ayuda" style="margin:0 0 10px">
+      No la marques en la tableta de la cocina: ahí entran y salen muchos, y
+      cada quien tiene que capturar con su propio nombre.
+    </div>
     <button class="p" id="btnEntrar">Ya tengo cuenta — Entrar</button>
     <button class="p" id="btnCrear" style="background:var(--rojo)">Es mi primera vez — Crear mi cuenta</button>
     <div class="ayuda" style="text-align:center;margin-top:10px">
@@ -217,7 +226,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v67</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v68</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -864,11 +873,23 @@ var API = 'https://dcshbbztzfnsyviblyde.supabase.co';
 var LLAVE = 'sb_publishable_7SF2aUrWdDkiqq6Zs2fKOg_SF-qc4x7';
 
 var TOKEN = null, YO = null, PERFIL = null;
+/* El papelito para renovar vive SIEMPRE en memoria, se haya marcado la casilla
+   o no: eso es lo que evita que la app deje de guardar a la hora. Al disco
+   sólo baja si la persona dijo que el teléfono es suyo. */
+var REFRESCO = null, REFRESCANDO = false, ESPERANDO = [];
 var INSUMOS = [], EXISTENCIAS = [], RECETAS = [], ORDENES = [], UBICACIONES = [], CLIENTES = [], PRODUCTOS = [], CONVERSIONES = [];
 var COSTO_HORA = 0, MODO_PRUEBA = false;
 
 /* ---------- plomería ---------- */
-function req(metodo, ruta, cuerpo, cb) {
+function req(metodo, ruta, cuerpo, cb) { pedir(metodo, ruta, cuerpo, cb, false); }
+
+/* El permiso de Supabase se vence solo cada hora. Hasta la v67 no se renovaba
+   NUNCA y no había una sola línea que mirara el 401: a la hora de estar
+   capturando, la app dejaba de guardar sin decir por qué y los renglones se
+   iban quedando en la cola. Ahora, al primer 401 se renueva y se manda lo
+   mismo otra vez -- una sola vez, para que un permiso de verdad vencido no
+   se vuelva un remolino de reintentos. */
+function pedir(metodo, ruta, cuerpo, cb, yaReintente) {
   var x = new XMLHttpRequest();
   x.open(metodo, API + ruta, true);
   x.setRequestHeader('apikey', LLAVE);
@@ -877,6 +898,15 @@ function req(metodo, ruta, cuerpo, cb) {
   x.setRequestHeader('Prefer', 'return=representation');
   x.onreadystatechange = function () {
     if (x.readyState !== 4) { return; }
+    if (x.status === 401 && TOKEN && REFRESCO && !yaReintente &&
+        ruta.indexOf('/auth/v1/token') === -1) {
+      refrescarSesion(function (ok) {
+        if (ok) { pedir(metodo, ruta, cuerpo, cb, true); return; }
+        if (PERFIL) { sesionSeVencio(); }
+        cb(false, null, 401);
+      });
+      return;
+    }
     var d = null;
     try { d = x.responseText ? JSON.parse(x.responseText) : null; } catch (e) { d = null; }
     /* El 409 es "ya estaba", no un error: pasa cuando un reintento llega dos veces.
@@ -884,6 +914,66 @@ function req(metodo, ruta, cuerpo, cb) {
     cb((x.status >= 200 && x.status < 300) || x.status === 409, d, x.status);
   };
   x.send(cuerpo ? JSON.stringify(cuerpo) : null);
+}
+
+/* Supabase cambia el papelito cada vez que se usa. El nuevo se guarda
+   enseguida: si se quedara el viejo, el siguiente intento fallaría y sacaría
+   a la persona sin ninguna razón visible.
+   El candado de REFRESCANDO es porque la app pide seis cosas al arrancar: sin
+   él, seis 401 al mismo tiempo mandarían seis renovaciones, y como el papelito
+   es de un solo uso, cinco fallarían y tumbarían la sesión buena. */
+function refrescarSesion(cb) {
+  if (!REFRESCO) { cb(false); return; }
+  if (REFRESCANDO) { ESPERANDO.push(cb); return; }
+  REFRESCANDO = true;
+  var x = new XMLHttpRequest();
+  x.open('POST', API + '/auth/v1/token?grant_type=refresh_token', true);
+  x.setRequestHeader('apikey', LLAVE);
+  x.setRequestHeader('Content-Type', 'application/json');
+  x.onreadystatechange = function () {
+    if (x.readyState !== 4) { return; }
+    var d = null, i, lista, ok;
+    try { d = x.responseText ? JSON.parse(x.responseText) : null; } catch (e) { d = null; }
+    ok = (x.status >= 200 && x.status < 300) && !!(d && d.access_token);
+    if (ok) {
+      TOKEN = d.access_token;
+      YO = d.user || YO;
+      REFRESCO = d.refresh_token || REFRESCO;
+      if (leerSesion()) { guardarSesion(REFRESCO); }
+    } else {
+      REFRESCO = null;
+      olvidarSesion();
+    }
+    REFRESCANDO = false;
+    lista = ESPERANDO; ESPERANDO = [];
+    cb(ok);
+    for (i = 0; i < lista.length; i++) { lista[i](ok); }
+  };
+  x.send(JSON.stringify({ refresh_token: REFRESCO }));
+}
+
+/* La sesión baja al disco SÓLO si se marcó la casilla. */
+function guardarSesion(refresco) {
+  try { window.localStorage.setItem('rana:sesion', refresco); } catch (e) { /* modo privado */ }
+}
+function leerSesion() {
+  try { return window.localStorage.getItem('rana:sesion') || ''; } catch (e) { return ''; }
+}
+function olvidarSesion() {
+  try { window.localStorage.removeItem('rana:sesion'); } catch (e) { /* nada */ }
+}
+
+/* Cuando ya no hay forma de renovar. No se pierde nada de lo capturado: la
+   cola vive en el teléfono y sube cuando la persona vuelva a entrar. */
+function sesionSeVencio() {
+  TOKEN = null; YO = null; PERFIL = null; REFRESCO = null;
+  olvidarSesion();
+  document.getElementById('app').className = 'oculto';
+  document.getElementById('entrar').className = '';
+  document.getElementById('miTel').checked = false;
+  decir('Se venció tu sesión y hay que entrar otra vez.<br>' +
+        'Lo que no se había subido sigue guardado en este teléfono.',
+        true, 'avisoEntrar');
 }
 
 /* Nada de alert() ni confirm(): en la tableta del Rinconcito están bloqueados. */
@@ -1126,7 +1216,12 @@ function entrar() {
     var cv = document.getElementById('clave');
     cv.type = 'password'; cv.value = '';
     document.getElementById('btnVerClave').innerHTML = 'Ver lo que escribí';
-    TOKEN = d.access_token; YO = d.user; arrancar();
+    TOKEN = d.access_token; YO = d.user; REFRESCO = d.refresh_token || null;
+    /* Se guarda SÓLO si lo pidió. En la tableta de la cocina nadie la marca,
+       y por eso ahí sigue sacando a todos, que es lo correcto. */
+    if (document.getElementById('miTel').checked && REFRESCO) { guardarSesion(REFRESCO); }
+    else { olvidarSesion(); }
+    arrancar();
   });
 }
 
@@ -1146,7 +1241,11 @@ function crearCuenta() {
         if (!ok) {
           decir('No se pudo crear la cuenta. ' + ((d && (d.msg || d.message)) || ''), true, 'avisoEntrar'); return;
         }
-        if (d && d.access_token) { TOKEN = d.access_token; YO = d.user; arrancar(); return; }
+        if (d && d.access_token) {
+          TOKEN = d.access_token; YO = d.user; REFRESCO = d.refresh_token || null;
+          if (document.getElementById('miTel').checked && REFRESCO) { guardarSesion(REFRESCO); }
+          arrancar(); return;
+        }
         decir('Cuenta creada. Si pide confirmar por correo, hay que apagar esa opción en Supabase ' +
               '(Authentication &rarr; Sign In / Providers &rarr; Confirm email) y volver a entrar.', false, 'avisoEntrar');
       });
@@ -6999,7 +7098,11 @@ document.getElementById('btnVerClave').onclick = function () {
   this.innerHTML = verla ? 'Ocultar la contraseña' : 'Ver lo que escribí';
 };
 document.getElementById('btnSalir').onclick = function () {
-  TOKEN = null; YO = null; PERFIL = null;
+  TOKEN = null; YO = null; PERFIL = null; REFRESCO = null;
+  /* Salir tiene que querer decir salir. Si no se borrara, la próxima vez
+     entraría solo y la persona creería que dejó su cuenta abierta. */
+  olvidarSesion();
+  document.getElementById('miTel').checked = false;
   document.getElementById('app').className = 'oculto';
   document.getElementById('entrar').className = '';
 };
@@ -7045,6 +7148,26 @@ if (window.addEventListener) {
     }
   }, false);
   window.addEventListener('offline', function () { pintarSenal(); pintarCola(); }, false);
+}
+
+/* ---------- volver a entrar solo ---------- */
+/* Sólo corre si quedó un papelito guardado, y eso sólo pasa si alguien marcó
+   "este teléfono es mío". En la tableta compartida esto nunca se ejecuta.
+   Importa más de lo que parece: el aviso del reposo suena con la app cerrada,
+   y sin esto, al tocarlo abría en la pantalla de la contraseña. */
+if (leerSesion()) {
+  REFRESCO = leerSesion();
+  document.getElementById('miTel').checked = true;
+  decir('Entrando...', false, 'avisoEntrar');
+  refrescarSesion(function (ok) {
+    if (!ok) {
+      decir('Se venció la sesión guardada en este teléfono. Entra otra vez.',
+            true, 'avisoEntrar');
+      return;
+    }
+    callar('avisoEntrar');
+    arrancar();
+  });
 }
 </script>
 </body>
