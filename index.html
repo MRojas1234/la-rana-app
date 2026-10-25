@@ -586,9 +586,22 @@
       <!-- Tres niveles: el sitio, el área, y lo que se hace ahí. Antes era una
            lista de cocinas y un formulario suelto, y no se entendía qué tenía
            que ver uno con lo otro. -->
-      <!-- PEDIR VA ARRIBA, no adentro de una cocina. Quien pide no está en la
-           cocina: está decidiendo qué hay que producir. Y es él quien dice a
-           dónde va la orden -- a una cocina o derecho al empaque. -->
+      <!-- LOS LUGARES VAN PRIMERO. Quien abre Producción casi siempre viene a
+           trabajar una tanda que ya le llegó, no a pedir una nueva: lo que
+           tiene que ver sin deslizar es a dónde entrar. Medido en un teléfono
+           de 375 px: con el formulario de pedir abierto, "¿Dónde se va a
+           trabajar?" empezaba en el pixel 1191; ahora empieza en el 565 y ya
+           NO se mueve cuando el formulario se abre, porque queda arriba de él.
+
+           PEDIR sigue aquí y no adentro de una cocina, eso no cambió: quien
+           pide no está en la cocina, está decidiendo qué hay que producir, y
+           es él quien dice a dónde va la orden. Nada más que ahora va
+           debajo, y detrás de su botón. -->
+      <div class="caja" id="prodSitios">
+        <h2>¿Dónde se va a trabajar?</h2>
+        <div class="menu" id="menuSitios"></div>
+      </div>
+
       <div class="caja" id="cajaPedir">
         <!-- El formulario va DETRÁS de un botón. Abierto de par en par
              empujaba "¿Dónde se va a trabajar?" fuera de la pantalla del
@@ -627,11 +640,6 @@
         </div>
         <button class="p" onclick="pedirTanda()">Mandar la orden</button>
         </div>
-      </div>
-
-      <div class="caja" id="prodSitios">
-        <h2>¿Dónde se va a trabajar?</h2>
-        <div class="menu" id="menuSitios"></div>
       </div>
 
       <div class="caja oculto" id="prodAreas">
