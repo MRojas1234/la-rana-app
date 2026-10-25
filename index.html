@@ -217,7 +217,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v66</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v67</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -2768,6 +2768,13 @@ function minutosDe(cuando) {
 
 function pintarOrdenes() {
   var c = document.getElementById('listaOrdenes'), h = '', i, o, esp, ctrls, j, ct;
+  /* Las terminadas se arman igual que todas pero se guardan aparte. El 25 de
+     octubre habia 12 cerradas revueltas con 5 vivas: la lista nunca se hacia
+     mas corta, y Maria corrigio dos veces la misma tanda porque la tarjeta no
+     se iba y eso se ve igual que si el boton no sirviera. Cada toque de mas
+     es un ajuste de inventario de mas -- ya habia pasado el 23 de octubre,
+     con cuatro ajustes identicos que se tuvieron que reparar a mano. */
+  var hc = '', nc = 0, hGuardado;
   if (!ORDENES.length) { c.innerHTML = '<div class="vacio">No hay nada pendiente.</div>'; return; }
 
   /* Cada lugar ve SÓLO lo suyo. Si el de la bodega ve las órdenes de la
@@ -2800,10 +2807,21 @@ function pintarOrdenes() {
     var qSeHace = o.rc_recetas ? o.rc_recetas.nombre : nombreProducto(o.producto_id);
     var mins = minutosDe(o.creado_en);
     var cerrada = (o.estado === 'cerrada' || o.estado === 'cancelada');
+    /* Se desvia la salida: la tarjeta se arma en `h` como todas y al cerrar
+       el renglon se muda a `hc`. Asi no hay que tocar los veinte lugares
+       donde esta funcion le va pegando pedazos a `h`. */
+    hGuardado = null;
+    if (cerrada) { hGuardado = h; h = ''; }
 
     h += '<div class="cmd ' + colorDe(o.estado) +
          (o.atorada_desde && !cerrada ? ' trabada' : '') + '">' +
-      '<div class="qq">' + esc(qSeHace) + '</div>' +
+      /* El numero de orden, porque la tarjeta se titulaba con la CANTIDAD y
+         de ahi salia pedirme "que pasa con las ordenes 20, 18 y 40" cuando
+         eran las ordenes 14, 17 y 28 -- las tres del mismo producto, que solo
+         se distinguian por cuantas cajas eran. */
+      '<div class="qq">' + esc(qSeHace) +
+        ' <small style="opacity:.55;font-weight:normal">orden ' + o.id +
+        '</small></div>' +
       (num(o.cuanto_piden) > 0
         ? '<div class="cuanto">' + miles(num(o.cuanto_piden)) +
           ' <small>' + esc(o.unidad_piden || '') + '</small></div>'
@@ -2966,8 +2984,11 @@ function pintarOrdenes() {
           '</div>' +
           '<label>¿Qué pasó? (obligatorio)</label>' +
           '<input id="qz' + o.id + '" placeholder="se capturó mal, se recontó...">' +
-          '<button class="p chico" style="width:100%" onclick="corregirTanda(' + o.id + ',' +
-            res.id + ',' + res.lote_id + ',' + num(res.bolsas_buenas) + ')">Guardar la corrección</button>' +
+          '<div id="avC' + o.id + '" class="aviso"></div>' +
+          '<button class="p chico" style="width:100%" id="qbtn' + o.id + '" ' +
+            'onclick="corregirTanda(' + o.id + ',' + res.id + ',' +
+            (res.lote_id === null ? 'null' : res.lote_id) + ',' +
+            num(res.bolsas_buenas) + ')">Guardar la corrección</button>' +
         '</div>' +
         '<button class="p g chico" style="width:100%;margin-top:9px" onclick="abrirCorreccion(' +
           o.id + ')">Corregir el resultado</button>';
@@ -3030,8 +3051,33 @@ function pintarOrdenes() {
       '</div>';
     }
     h += '</div>';
+    if (cerrada) { nc++; hc += h; h = hGuardado; }
+  }
+  if (nc > 0) {
+    if (!h) { h = '<div class="vacio">No hay nada pendiente aqui.</div>'; }
+    h += '<button class="p g chico" style="width:100%;margin-top:14px" ' +
+      'id="btnTerm" data-n="' + nc + '" onclick="verTerminadas()">Ver las ' +
+      nc + ' que ya se terminaron</button>' +
+      '<div id="terminadas" class="oculto">' + hc + '</div>';
   }
   c.innerHTML = h;
+}
+
+/* Lo terminado no estorba, pero no se borra: se corrige desde aqui. */
+function verTerminadas() {
+  var d = document.getElementById('terminadas');
+  var b = document.getElementById('btnTerm');
+  if (!d || !b) { return; }
+  var abrir = (d.className === 'oculto');
+  d.className = abrir ? '' : 'oculto';
+  /* El numero se guarda en el boton, no se saca del texto: al cerrarlo
+     perdia la cuenta y decia "Ver lo ya terminado" a secas. */
+  var n = b.getAttribute('data-n') || '';
+  b.innerHTML = abrir ? 'Esconder las ' + n + ' que ya se terminaron'
+                      : 'Ver las ' + n + ' que ya se terminaron';
+  if (abrir) {
+    try { d.scrollIntoView({ block: 'start' }); } catch (e) { d.scrollIntoView(); }
+  }
 }
 
 /* Sólo se cancela una tanda que todavía NO movió nada. Una ya surtida tendría
@@ -3225,12 +3271,32 @@ function corregirTanda(ordenId, resId, loteId, antes) {
   var razon = document.getElementById('qz' + ordenId).value;
   var dif = buenas - antes;
 
-  if (buenas <= 0) { decir('Las bolsas buenas tienen que ser más de cero.', true); return; }
+  /* Los reclamos van EN LA TARJETA, no arriba de la pagina. decir() sin
+     destino brinca al tope, y desde el final de una lista larga eso se ve
+     igual que si no hubiera pasado nada. */
+  var donde = 'avC' + ordenId;
+  if (buenas <= 0) { decir('Las bolsas buenas tienen que ser más de cero.', true, donde); return; }
   if (Math.abs(dif) < 0.000001 && !razon) {
-    decir('No cambiaste las bolsas buenas. Si sólo querías mover la merma, escribe también por qué.', true);
+    decir('No cambiaste las bolsas buenas. Si sólo querías mover la merma, escribe también por qué.', true, donde);
     return;
   }
-  if (!razon) { decir('Escribe qué pasó. Una corrección sin razón vale lo mismo que el error.', true); return; }
+  if (!razon) { decir('Escribe qué pasó. Una corrección sin razón vale lo mismo que el error.', true, donde); return; }
+  if (Math.abs(dif) > 0.000001 && (loteId === null || loteId === undefined)) {
+    decir('Esta tanda no tiene lote, así que no se le puede mover el ' +
+          'inventario. Avísale a María: hay que ver por dónde se cerró.', true, donde);
+    return;
+  }
+
+  /* UN SOLO TOQUE. Cada toque es un ajuste de inventario aparte: el 23 de
+     octubre quedaron cuatro ajustes identicos de la misma tanda porque nada
+     en la pantalla decia que el primero ya habia entrado. */
+  var btn = document.getElementById('qbtn' + ordenId);
+  if (btn) {
+    if (btn.disabled) { return; }
+    btn.disabled = true;
+    btn.innerHTML = 'Guardando...';
+  }
+  decir('Guardando la corrección...', false, donde);
 
   var o = ordenPorId(ordenId);
   req('GET', '/rest/v1/rc_costo_por_orden?select=costo_total&orden_id=eq.' + ordenId, null,
@@ -3255,12 +3321,22 @@ function corregirTanda(ordenId, resId, loteId, antes) {
       }
 
       hacer('Corrección de ' + (o.folio || ('tanda ' + ordenId)), pasos, function (ok) {
+        if (!ok && btn) {
+          btn.disabled = false;
+          btn.innerHTML = 'Guardar la corrección';
+          decir('No se pudo guardar. Vuelve a picarle.', true, donde);
+        }
         if (ok) {
           decir('Corregido de <b>' + antes + '</b> a <b>' + buenas + '</b> bolsas' +
                 (Math.abs(dif) > 0.000001
                   ? '. El inventario se movió ' + (dif > 0 ? '+' : '') + dif + ' y quedó en el historial con tu nombre.'
                   : '.') +
                 (tot > 0 && !o.es_maquila ? ' El costo por bolsa se recalculó solo.' : ''), false);
+          /* Se cierra la caja: al repintarse la lista, la tarjeta ya ensena
+             el numero nuevo, y una caja abierta con el numero viejo invita a
+             picarle otra vez. */
+          var caja = document.getElementById('cor' + ordenId);
+          if (caja) { caja.className = 'oculto'; }
         }
         cargarOrdenes(); cargarInsumos();
       });
