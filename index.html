@@ -11,6 +11,13 @@
 <meta http-equiv="Expires" content="0">
 <title>La Rana Snacks — Producción</title>
 <link rel="apple-touch-icon" href="icono.png">
+<!-- El manifiesto NO es adorno: en iPhone los avisos con la app cerrada solo
+     funcionan si la app esta instalada en la pantalla de inicio, y para
+     instalarse hace falta esto. Regla de Apple. -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="La Rana">
+<meta name="theme-color" content="#1b6b2f">
 <link rel="icon" href="icono.png">
 <style>
   :root{
@@ -210,7 +217,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v65</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v66</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -256,6 +263,12 @@
     <section id="p-inicio">
       <!-- Lo primero: el negocio, no los pendientes. Esto se ve desde el día
            uno, aunque todavía no haya un solo movimiento capturado. -->
+      <!-- Los avisos con el celular guardado. Se pinta sola segun lo que
+           pueda este telefono, y se esconde cuando no hay nada que ofrecer.
+           Va arriba de todo porque se prende UNA vez por celular y lo que no
+           se ve no se pica. -->
+      <div class="caja oculto" id="cajaAvisos"></div>
+
       <div class="menu" id="menuInicio"></div>
 
       <!-- Lo que anda afuera. Es lo que le quita el sueño al dueño: mercancía
@@ -1152,6 +1165,7 @@ function arrancar() {
     document.getElementById('quienSoy').innerHTML =
       esc(PERFIL.nombre || '') + ' · ' + (PERFIL.rol === 'dueno' ? 'Dueño' : PERFIL.rol);
     pintarSenal();
+    arrancarAvisos();
     cargarCola(); pintarCola();
     /* Lo que quedó sin subir de la última vez se intenta al entrar. */
     if (COLA.length) {
@@ -1168,6 +1182,9 @@ function arrancar() {
       document.getElementById('tabGente').className = 'oculto';
       document.getElementById('altaLugar').className = 'oculto';
     }
+    /* El aviso del reposo abre la app en ./#produccion, que es donde se ve
+       cual tanda y cuanto se paso. Sin esto los deja en Inicio buscando. */
+    if (location.hash === '#produccion') { ver('produccion'); }
     amarrarBorrador('iNombre'); amarrarBorrador('rProducto');
     amarrarBorrador('rPres'); amarrarBorrador('rRend'); amarrarBorrador('oResp');
     cargarTodo();
@@ -1188,6 +1205,190 @@ function lugaresPara(tipos, excluir) {
          (u.tipo === 'congelador' ? ' (frío)' : '') + '</option>';
   }
   return h;
+}
+
+/* ====================================================================
+   AVISOS CON EL CELULAR GUARDADO
+
+   La alarma del reposo (v65) solo se ve con la app abierta en la pantalla.
+   Nadie se queda mirando un telefono cuatro horas. Esto hace que suene con
+   el celular en la bolsa.
+
+   Es el mismo molde de Mi Turno (ops-v56), que ya esta probado de punta a
+   punta. Tres cosas que no se pueden olvidar:
+
+   · En iPhone SOLO funciona si la app esta instalada en la pantalla de
+     inicio. Es regla de Apple y no se rodea; por eso se detecta y se explica
+     en vez de dejarlos picando un boton que no iba a servir.
+   · Se prende CELULAR POR CELULAR. Prenderlo en uno no lo prende en los otros.
+   · El canal confiable sigue siendo la pantalla. El push es el de encima: si
+     falla, la tarjeta de la tanda sigue gritando igual.
+   ==================================================================== */
+var SW = null;
+
+function hayAvisos() {
+  return ('serviceWorker' in navigator) && ('PushManager' in window) &&
+         ('Notification' in window) && (typeof Promise !== 'undefined');
+}
+function esIPhone() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+function estaInstalada() {
+  if (navigator.standalone === true) { return true; }
+  try { return window.matchMedia('(display-mode: standalone)').matches; }
+  catch (e) { return false; }
+}
+/* La llave publica viene en base64url y subscribe() la pide en bytes. */
+function aBytes(b64) {
+  var s = (b64 + '===='.slice(0, (4 - (b64.length % 4)) % 4))
+            .replace(/-/g, '+').replace(/_/g, '/');
+  var cru = atob(s), u = new Uint8Array(cru.length), i;
+  for (i = 0; i < cru.length; i++) { u[i] = cru.charCodeAt(i); }
+  return u;
+}
+/* requestPermission() es promesa en los telefonos nuevos y callback en los
+   viejos, y hay navegadores que hacen LAS DOS. El candado evita que la
+   respuesta se procese dos veces. */
+function pedirPermiso(cb) {
+  var p = null, ya = false;
+  function una(x) { if (ya) { return; } ya = true; cb(x); }
+  try { p = Notification.requestPermission(una); } catch (e) { p = null; }
+  if (p && typeof p.then === 'function') { p.then(una); }
+}
+
+function arrancarAvisos() {
+  if (!hayAvisos()) { pintarAvisos(); return; }
+  navigator.serviceWorker.register('sw.js').then(function () {
+    return navigator.serviceWorker.ready;
+  }).then(function (reg) {
+    SW = reg;
+    pintarAvisos();
+  })['catch'](function () { SW = null; pintarAvisos(); });
+}
+
+function pintarAvisos() {
+  var c = document.getElementById('cajaAvisos');
+  if (!c) { return; }
+  var h = '<h2>Avisos con el celular guardado</h2>';
+
+  if (!hayAvisos()) {
+    c.className = 'caja';
+    c.innerHTML = h + '<div class="ayuda">Este telefono no puede recibir avisos ' +
+      'con la app cerrada. La alarma del reposo <b>si se ve</b> cuando tienes la ' +
+      'app abierta en la pantalla.</div>';
+    return;
+  }
+  if (esIPhone() && !estaInstalada()) {
+    c.className = 'caja';
+    c.innerHTML = h + '<div class="ayuda">En iPhone esto solo funciona si la app ' +
+      'esta <b>instalada en la pantalla de inicio</b>. Es regla de Apple.<br><br>' +
+      'Pical&eacute; al boton de <b>Compartir</b> (el cuadrito con la flecha para ' +
+      'arriba), baja hasta <b>Agregar a pantalla de inicio</b>, y vuelve a entrar ' +
+      'desde el icono de La Rana. Aqui mismo va a aparecer el boton.</div>';
+    return;
+  }
+  if (!SW) { c.className = 'caja oculto'; return; }
+  if (Notification.permission === 'denied') {
+    c.className = 'caja';
+    c.innerHTML = h + '<div class="ayuda">Este telefono tiene los avisos ' +
+      '<b>bloqueados</b> para esta pagina. Se vuelven a prender en los ajustes ' +
+      'del navegador, en Notificaciones.</div>';
+    return;
+  }
+  SW.pushManager.getSubscription().then(function (sus) {
+    c.className = 'caja';
+    if (sus) {
+      c.innerHTML = h +
+        '<div class="aviso ok" style="margin-bottom:12px">Este celular <b>va a ' +
+        'sonar</b> cuando se cumpla el reposo de una tanda tuya, aunque tengas ' +
+        'la app cerrada.</div>' +
+        '<button class="p chico" style="width:100%;margin-bottom:8px" ' +
+        'onclick="probarAviso()">Mandame uno de prueba</button>' +
+        '<button class="p g chico" style="width:100%" ' +
+        'onclick="apagarAvisos()">Ya no quiero avisos en este celular</button>' +
+        '<div class="ayuda" style="margin-top:10px">El de prueba se ve <b>igual</b> ' +
+        'que uno de verdad y va por el <b>mismo camino</b>: asi se sabe que el ' +
+        'camino funciona sin esperar a que se venza un reposo de verdad.</div>' +
+        '<div id="avisoPush" class="aviso"></div>';
+    } else {
+      c.innerHTML = h +
+        '<div class="ayuda" style="margin-bottom:12px">Hoy la alarma del reposo ' +
+        'solo se ve con la app abierta, y nadie se queda mirando el telefono ' +
+        'cuatro horas. Con esto <b>suena aunque lo traigas guardado</b>.<br><br>' +
+        'Se prende <b>celular por celular</b>: prenderlo aqui no lo prende en ' +
+        'los demas.</div>' +
+        '<button class="p" style="width:100%" onclick="prenderAvisos()">' +
+        'Avisarme aunque tenga el celular guardado</button>' +
+        '<div id="avisoPush" class="aviso"></div>';
+    }
+  })['catch'](function () { c.className = 'caja oculto'; });
+}
+
+function prenderAvisos() {
+  decir('Pidiendo el permiso en este celular...', false, 'avisoPush');
+  pedirPermiso(function (p) {
+    if (p !== 'granted') {
+      decir('No se dio el permiso, asi que este celular no va a sonar. La ' +
+            'alarma de la pantalla sigue igual que antes.', true, 'avisoPush');
+      return;
+    }
+    req('POST', '/rest/v1/rpc/rc_push_llave_publica', {}, function (ok, llave) {
+      if (!ok || !llave) {
+        decir('No se pudo traer la llave de los avisos. Vuelve a picarle.',
+              true, 'avisoPush');
+        return;
+      }
+      SW.pushManager.subscribe({
+        userVisibleOnly: true, applicationServerKey: aBytes(llave)
+      }).then(function (sus) {
+        var j = sus.toJSON();
+        req('POST', '/rest/v1/rpc/rc_push_guardar', {
+          p_endpoint: sus.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth
+        }, function (ok2, d2, st) {
+          if (!ok2) {
+            decir('El telefono quedo listo pero no se pudo guardar en la base (' +
+                  st + '). Vuelve a picarle.', true, 'avisoPush');
+            return;
+          }
+          pintarAvisos();
+          decir('Listo. Este celular ya va a sonar. Mandate uno de prueba para ' +
+                'ver como se va a oir.', false, 'avisoPush');
+        });
+      })['catch'](function (e) {
+        decir('El telefono no dejo suscribirse: ' + esc(String(e)), true, 'avisoPush');
+      });
+    });
+  });
+}
+
+function apagarAvisos() {
+  decir('Apagando...', false, 'avisoPush');
+  SW.pushManager.getSubscription().then(function (sus) {
+    if (!sus) { pintarAvisos(); return; }
+    /* Primero se borra de la base y luego del celular. Si se cae a media
+       operacion es mejor que sobre un renglon muerto -- se limpia solo cuando
+       el aviso rebota -- que un celular recibiendo sin poder apagarlo. */
+    req('POST', '/rest/v1/rpc/rc_push_quitar', { p_endpoint: sus.endpoint },
+      function () {
+        sus.unsubscribe().then(function () {
+          pintarAvisos();
+          decir('Ya no vas a recibir avisos en este celular.', false, 'avisoPush');
+        })['catch'](function () { pintarAvisos(); });
+      });
+  })['catch'](function () { pintarAvisos(); });
+}
+
+function probarAviso() {
+  decir('Mandando el de prueba...', false, 'avisoPush');
+  req('POST', '/rest/v1/rpc/rc_push_probar', {}, function (ok, d) {
+    if (!ok || !d) { decir('No se pudo mandar el de prueba.', true, 'avisoPush'); return; }
+    if (d.ok === false) { decir(esc(d.nota || 'No se pudo.'), true, 'avisoPush'); return; }
+    decir('Mandado a ' + d.celulares +
+          (d.celulares === 1 ? ' celular' : ' celulares') +
+          '. Debe sonar en unos segundos. <b>Si no suena</b>, revisa que el ' +
+          'telefono no este en silencio ni en No molestar.', false, 'avisoPush');
+  });
 }
 
 /* ---------- cargar ---------- */
