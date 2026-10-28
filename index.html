@@ -226,7 +226,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v69</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v70</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -6647,7 +6647,7 @@ function cerrarRuta() {
    lee igual que aprobado. */
 
 var LIMPIEZA = [], PERSONAS = [], BORRADORES = [], LUGARES_LIMP = [];
-var FILTRO_LIMP = '', TAREA_ABIERTA = null;
+var FILTRO_LIMP = '', TAREA_ABIERTA = null, PIDE_CORRECTIVA_LIMP = false;
 
 function cargarLimpieza() {
   req('GET', '/rest/v1/rc_limpieza_hoy?select=*&order=ubicacion.asc,critica.desc,que.asc',
@@ -6821,6 +6821,7 @@ function abrirTarea(id) {
   }
   if (!x) { return; }
   TAREA_ABIERTA = x;
+  PIDE_CORRECTIVA_LIMP = false;
   e = estadoDe(x);
 
   s = '<h2>' + (x.critica ? '🔴 ' : '') + esc(x.que) + '</h2>' +
@@ -6869,6 +6870,7 @@ function abrirTarea(id) {
       '<select id="quienRevisa">' + opcionesPersonas(true) + '</select>' +
       '<label>Si la rechazas, ¿por qué?</label>' +
       '<input id="razonRevision" placeholder="Sólo si la rechazas">' +
+      '<div id="revCorrectiva"></div>' +
       '<div class="fila" style="margin-top:14px">' +
         '<button class="p" style="margin-top:0" onclick="guardarRevision(\'aceptada\')">Así quedó bien</button>' +
         '<button class="p r" style="margin-top:0" onclick="guardarRevision(\'rechazada\')">No quedó</button>' +
@@ -6885,7 +6887,7 @@ function abrirTarea(id) {
 }
 
 function cerrarTarea() {
-  TAREA_ABIERTA = null;
+  TAREA_ABIERTA = null; PIDE_CORRECTIVA_LIMP = false;
   var c = document.getElementById('cajaUnaTarea');
   if (c) { c.className = 'caja oculto'; }
 }
@@ -6919,7 +6921,7 @@ function guardarLimpieza() {
 }
 
 function guardarRevision(res) {
-  var x = TAREA_ABIERTA, n, razon;
+  var x = TAREA_ABIERTA, n, razon, ctx, hizo, k, pasos;
   if (!x || !x.limpieza_id) { return; }
   n = document.getElementById('quienRevisa').value;
   if (!n) { decir('Falta escoger quién revisa.', true); return; }
@@ -6929,18 +6931,48 @@ function guardarRevision(res) {
           'quien la tiene que repetir.', true);
     return;
   }
-  hacer('Revisión: ' + x.que, [
-    paso('POST', '/rest/v1/rpc/rc_verificar_limpieza', {
-      p_limpieza_id: x.limpieza_id,
-      p_quien_nombre: n,
-      p_resultado: res,
-      p_razon: razon
-    }, null)
-  ], function (ok) {
+
+  /* Un rechazo NO se guarda solo. Rechazar dice que algo salió mal; 117.150
+     pide además qué se hizo, qué pasó con el producto y cómo no se repite.
+     Igual que en Registros se pide en el momento — al rato ya nadie se
+     acuerda — y las dos cosas salen en UNA operación. */
+  ctx = x.que + ' se rechazó en la revisión: ' + razon;
+  if (res === 'rechazada' && !PIDE_CORRECTIVA_LIMP) {
+    PIDE_CORRECTIVA_LIMP = true;
+    document.getElementById('revCorrectiva').innerHTML = camposCorrectiva(ctx);
+    decir('Rechazada. Antes de guardarla hay que escribir <b>qué se hizo</b> — ' +
+          'así lo pide la ley y así le sirve al que la repite.', true);
+    return;
+  }
+
+  pasos = [paso('POST', '/rest/v1/rpc/rc_verificar_limpieza', {
+    p_limpieza_id: x.limpieza_id,
+    p_quien_nombre: n,
+    p_resultado: res,
+    p_razon: razon
+  }, null)];
+
+  if (res === 'rechazada') {
+    hizo = document.getElementById('acHizo').value;
+    if (!hizo) {
+      decir('Falta <b>qué se hizo</b>. Sin eso el rechazo queda como una queja, ' +
+            'no como una acción correctiva.', true);
+      return;
+    }
+    k = llaveUnica();
+    /* Aquí sí hay id de verdad — la limpieza ya existe — así que la correctiva
+       se amarra directo por sobre_id y no hace falta la clave encadenada que
+       usa la bitácora. */
+    pasos.push(paso('POST', '/rest/v1/rpc/rc_registrar_correctiva',
+      cuerpoCorrectiva('limpieza', x.limpieza_id, null, n, ctx, hizo, k), null));
+  }
+
+  hacer('Revisión: ' + x.que, pasos, function (ok) {
     if (!ok) { return; }
     decir(res === 'aceptada'
       ? 'Revisada y aceptada por <b>' + esc(n) + '</b>.'
-      : 'Rechazada por <b>' + esc(n) + '</b>. Hay que repetirla.', res !== 'aceptada');
+      : 'Rechazada por <b>' + esc(n) + '</b>, con lo que se hizo anotado. ' +
+        'Hay que repetirla.', res !== 'aceptada');
     cerrarTarea(); cargarLimpieza();
   });
 }

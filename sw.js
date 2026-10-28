@@ -22,7 +22,7 @@
 // abran la app, que es donde ya se ve cual tanda y cuanto se paso. Asi el
 // aviso nunca queda desactualizado y cabe en la pantalla de un telefono.
 // ====================================================================
-var VERSION = 'rana-v69';
+var VERSION = 'rana-v70';
 
 self.addEventListener('install', function () {
   self.skipWaiting();
