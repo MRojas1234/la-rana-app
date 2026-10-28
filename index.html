@@ -226,7 +226,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v70</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v71</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -3111,6 +3111,12 @@ function pintarOrdenes() {
           '</div>' +
           '<label>¿Qué pasó? (obligatorio)</label>' +
           '<input id="qz' + o.id + '" placeholder="se capturó mal, se recontó...">' +
+          '<label>¿Por qué cambió el número?</label>' +
+          '<select id="qt' + o.id + '" onchange="verSiPaso(' + o.id + ')">' +
+            '<option value="papel">Nomás estaba mal apuntado</option>' +
+            '<option value="producto">Le pasó algo al producto</option>' +
+          '</select>' +
+          '<div id="qc' + o.id + '"></div>' +
           '<div id="avC' + o.id + '" class="aviso"></div>' +
           '<button class="p chico" style="width:100%" id="qbtn' + o.id + '" ' +
             'onclick="corregirTanda(' + o.id + ',' + res.id + ',' +
@@ -3385,6 +3391,22 @@ function abrirCorreccion(id) {
   e.className = e.className === 'oculto' ? '' : 'oculto';
 }
 
+/* Una corrección NO es por fuerza una acción correctiva. La mayoría son de
+   dedo — se capturó 92 donde eran 29 — y si cada una fuera una correctiva, la
+   bitácora se llenaría de errores de tecleo y las de verdad quedarían
+   enterradas: lo contrario de lo que busca un inspector. Cuál es cuál lo dice
+   la persona; la app no lo adivina. */
+function verSiPaso(id) {
+  var c = document.getElementById('qc' + id), o;
+  if (!c) { return; }
+  if (document.getElementById('qt' + id).value !== 'producto') { c.innerHTML = ''; return; }
+  o = ordenPorId(id);
+  /* El sufijo es el id de la tanda: en esta lista puede haber dos cajas
+     abiertas y los campos no se pueden pisar entre tandas. */
+  c.innerHTML = camposCorrectiva('Tanda ' + ((o && o.folio) || id) +
+    ': le pasó algo al producto — no fue el número mal apuntado.', id);
+}
+
 /* Corregir una tanda cerrada. Tres cosas tienen que pasar juntas, o el
    inventario y el costo se quedan diciendo cosas distintas:
    1. el inventario se mueve por la DIFERENCIA, con motivo ajuste y razón;
@@ -3397,6 +3419,7 @@ function corregirTanda(ordenId, resId, loteId, antes) {
   var merma = num(document.getElementById('qm' + ordenId).value);
   var razon = document.getElementById('qz' + ordenId).value;
   var dif = buenas - antes;
+  var esProducto, hizo, firma, el;
 
   /* Los reclamos van EN LA TARJETA, no arriba de la pagina. decir() sin
      destino brinca al tope, y desde el final de una lista larga eso se ve
@@ -3408,6 +3431,30 @@ function corregirTanda(ordenId, resId, loteId, antes) {
     return;
   }
   if (!razon) { decir('Escribe qué pasó. Una corrección sin razón vale lo mismo que el error.', true, donde); return; }
+
+  /* Si la persona dijo que le pasó algo al producto, la correctiva sale en la
+     MISMA operación que la corrección. Se revisa ANTES de bloquear el botón:
+     un regano con el botón ya bloqueado deja a la gente sin poder reintentar. */
+  el = document.getElementById('qt' + ordenId);
+  esProducto = !!el && el.value === 'producto';
+  if (esProducto) {
+    el = document.getElementById('acHizo' + ordenId);
+    hizo = el ? el.value : '';
+    if (!hizo) {
+      decir('Dijiste que le pasó algo al producto. Falta <b>qué se hizo</b> — sin ' +
+            'eso no es una acción correctiva, es nomás un número corregido.', true, donde);
+      return;
+    }
+    /* La firma sale del perfil, como en el recado del jefe de esta misma
+       pantalla. PERSONAS aquí puede estar vacío — sólo lo cargan Limpieza y
+       Registros — y un select vacío dejaría a la gente sin poder guardar. */
+    firma = (PERFIL && PERFIL.nombre) || '';
+    if (!firma) {
+      decir('Tu cuenta no tiene nombre puesto, y una acción correctiva sin firma ' +
+            'no vale. Avísale a María para que te lo ponga en <i>Personal</i>.', true, donde);
+      return;
+    }
+  }
   if (Math.abs(dif) > 0.000001 && (loteId === null || loteId === undefined)) {
     decir('Esta tanda no tiene lote, así que no se le puede mover el ' +
           'inventario. Avísale a María: hay que ver por dónde se cerró.', true, donde);
@@ -3445,6 +3492,15 @@ function corregirTanda(ordenId, resId, loteId, antes) {
       if (!o.es_maquila && buenas > 0 && tot > 0) {
         pasos.push(paso('PATCH', '/rest/v1/rc_lotes?id=eq.' + loteId,
                         { costo_unitario: tot / buenas }));
+      }
+      if (esProducto) {
+        /* La tanda ya existe, así que la correctiva se amarra directo por
+           sobre_id — igual que en Limpieza, sin clave encadenada. */
+        pasos.push(paso('POST', '/rest/v1/rpc/rc_registrar_correctiva',
+          cuerpoCorrectiva('orden', ordenId, null, firma,
+            'Tanda ' + (o.folio || ordenId) + ': el resultado pasó de ' + antes +
+            ' a ' + buenas + ' bolsas. ' + razon,
+            hizo, llaveUnica(), ordenId), null));
       }
 
       hacer('Corrección de ' + (o.folio || ('tanda ' + ordenId)), pasos, function (ok) {
@@ -7502,7 +7558,13 @@ function cerrarTipo() {
 /* Los campos de la acción correctiva, que salen DENTRO del mismo panel en el
    momento en que el valor sale fuera. No es una pantalla aparte a propósito:
    si se deja para después, nadie se acuerda de qué se hizo. */
-function camposCorrectiva(ctx) {
+/* El sufijo existe porque la lista de órdenes puede tener DOS cajas de
+   corrección abiertas a la vez, y `oculto` no saca nada del documento: con
+   ids fijos, getElementById devolvería el campo de la otra tanda y la
+   correctiva se guardaría con el texto equivocado. Vacío por omisión, para
+   que Registros y Limpieza — donde sólo hay una caja — no cambien. */
+function camposCorrectiva(ctx, sfx) {
+  sfx = sfx || '';
   return '<div class="item" style="border-left:4px solid var(--rojo);margin-top:14px">' +
     '<div class="n">Hay que anotar qué se hizo</div>' +
     '<div class="d">' + esc(ctx) + '</div>' +
@@ -7510,28 +7572,29 @@ function camposCorrectiva(ctx) {
     'qué se hizo, qué pasó con el producto, y cómo se evita que se repita. ' +
     'Escríbelo ahora, que es cuando se sabe.</div>' +
     '<label>Qué se hizo</label>' +
-    '<input id="acHizo" placeholder="Lo que se hizo en ese momento">' +
+    '<input id="acHizo' + sfx + '" placeholder="Lo que se hizo en ese momento">' +
     '<label>Para que no se repita</label>' +
-    '<input id="acEvitar" placeholder="Si ya lo saben; si no, déjalo vacío">' +
+    '<input id="acEvitar' + sfx + '" placeholder="Si ya lo saben; si no, déjalo vacío">' +
     '<label>¿Hubo producto afectado?</label>' +
-    '<select id="acHubo" onchange="verDestino()">' +
+    '<select id="acHubo' + sfx + '" onchange="verDestino(' + sfx + ')">' +
       '<option value="no">No hubo producto afectado</option>' +
       '<option value="si">Sí, sí hubo</option></select>' +
-    '<div id="acProducto"></div>' +
+    '<div id="acProducto' + sfx + '"></div>' +
     '</div>';
 }
 
-function verDestino() {
-  var c = document.getElementById('acProducto');
+function verDestino(sfx) {
+  sfx = sfx || '';
+  var c = document.getElementById('acProducto' + sfx);
   if (!c) { return; }
-  c.innerHTML = (document.getElementById('acHubo').value === 'si')
+  c.innerHTML = (document.getElementById('acHubo' + sfx).value === 'si')
     ? '<label>Qué producto</label>' +
-      '<input id="acQueProd" placeholder="Como le dicen">' +
+      '<input id="acQueProd' + sfx + '" placeholder="Como le dicen">' +
       '<label>Cuánto</label>' +
-      '<input id="acCuanto" type="number" step="any" inputmode="decimal" ' +
+      '<input id="acCuanto' + sfx + '" type="number" step="any" inputmode="decimal" ' +
       'placeholder="Bolsas o cajas">' +
       '<label>Qué pasó con él</label>' +
-      '<select id="acDestino">' +
+      '<select id="acDestino' + sfx + '">' +
         '<option value="retenido">Se apartó, sin soltar</option>' +
         '<option value="reprocesado">Se volvió a procesar</option>' +
         '<option value="destruido">Se tiró</option>' +
@@ -7625,17 +7688,18 @@ function guardarLectura() {
 
 /* El cuerpo de la correctiva, armado en un solo lugar: lo usan la captura de
    la lectura y la caja de «salió fuera y nadie arregló». */
-function cuerpoCorrectiva(sobre, sobreId, claveBit, quien, quePaso, queHizo, clave) {
+function cuerpoCorrectiva(sobre, sobreId, claveBit, quien, quePaso, queHizo, clave, sfx) {
   var hubo = false, dest = 'ninguno', prod = null, cuanto = null, el;
-  el = document.getElementById('acHubo');
+  sfx = sfx || '';
+  el = document.getElementById('acHubo' + sfx);
   if (el && el.value === 'si') {
     hubo = true;
-    dest = document.getElementById('acDestino').value;
-    prod = document.getElementById('acQueProd').value || null;
-    el = document.getElementById('acCuanto');
+    dest = document.getElementById('acDestino' + sfx).value;
+    prod = document.getElementById('acQueProd' + sfx).value || null;
+    el = document.getElementById('acCuanto' + sfx);
     cuanto = (el && el.value !== '') ? num(el.value) : null;
   }
-  el = document.getElementById('acEvitar');
+  el = document.getElementById('acEvitar' + sfx);
   return {
     p_sobre: sobre,
     p_sobre_id: sobreId,
