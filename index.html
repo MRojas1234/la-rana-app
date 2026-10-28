@@ -226,7 +226,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v71</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v72</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -6977,7 +6977,7 @@ function guardarLimpieza() {
 }
 
 function guardarRevision(res) {
-  var x = TAREA_ABIERTA, n, razon, ctx, hizo, k, pasos;
+  var x = TAREA_ABIERTA, n, razon, ctx, hizo, cuerpo;
   if (!x || !x.limpieza_id) { return; }
   n = document.getElementById('quienRevisa').value;
   if (!n) { decir('Falta escoger quién revisa.', true); return; }
@@ -6995,35 +6995,36 @@ function guardarRevision(res) {
   ctx = x.que + ' se rechazó en la revisión: ' + razon;
   if (res === 'rechazada' && !PIDE_CORRECTIVA_LIMP) {
     PIDE_CORRECTIVA_LIMP = true;
-    document.getElementById('revCorrectiva').innerHTML = camposCorrectiva(ctx);
+    document.getElementById('revCorrectiva').innerHTML = camposCorrectiva(ctx, 'Limp');
     decir('Rechazada. Antes de guardarla hay que escribir <b>qué se hizo</b> — ' +
           'así lo pide la ley y así le sirve al que la repite.', true);
     return;
   }
 
-  pasos = [paso('POST', '/rest/v1/rpc/rc_verificar_limpieza', {
+  cuerpo = {
     p_limpieza_id: x.limpieza_id,
     p_quien_nombre: n,
     p_resultado: res,
     p_razon: razon
-  }, null)];
+  };
 
   if (res === 'rechazada') {
-    hizo = document.getElementById('acHizo').value;
+    hizo = document.getElementById('acHizoLimp').value;
     if (!hizo) {
       decir('Falta <b>qué se hizo</b>. Sin eso el rechazo queda como una queja, ' +
             'no como una acción correctiva.', true);
       return;
     }
-    k = llaveUnica();
-    /* Aquí sí hay id de verdad — la limpieza ya existe — así que la correctiva
-       se amarra directo por sobre_id y no hace falta la clave encadenada que
-       usa la bitácora. */
-    pasos.push(paso('POST', '/rest/v1/rpc/rc_registrar_correctiva',
-      cuerpoCorrectiva('limpieza', x.limpieza_id, null, n, ctx, hizo, k), null));
+    /* UNA sola llamada, por lo mismo que en la bitácora: dos pasos eran dos
+       transacciones. El «qué pasó» lo arma la base con el nombre real de la
+       tarea y la razón que se escribió aquí. */
+    cuerpo.p_correctiva = correctivaJson('Limp');
+    cuerpo.p_correctiva.clave = llaveUnica();
   }
 
-  hacer('Revisión: ' + x.que, pasos, function (ok) {
+  hacer('Revisión: ' + x.que, [
+    paso('POST', '/rest/v1/rpc/rc_verificar_limpieza', cuerpo, null)
+  ], function (ok) {
     if (!ok) { return; }
     decir(res === 'aceptada'
       ? 'Revisada y aceptada por <b>' + esc(n) + '</b>.'
@@ -7558,11 +7559,18 @@ function cerrarTipo() {
 /* Los campos de la acción correctiva, que salen DENTRO del mismo panel en el
    momento en que el valor sale fuera. No es una pantalla aparte a propósito:
    si se deja para después, nadie se acuerda de qué se hizo. */
-/* El sufijo existe porque la lista de órdenes puede tener DOS cajas de
-   corrección abiertas a la vez, y `oculto` no saca nada del documento: con
-   ids fijos, getElementById devolvería el campo de la otra tanda y la
-   correctiva se guardaría con el texto equivocado. Vacío por omisión, para
-   que Registros y Limpieza — donde sólo hay una caja — no cambien. */
+/* El sufijo NO es un lujo. `oculto` no saca nada del documento, así que las
+   cajas de todas las pantallas conviven en la página al mismo tiempo, y con
+   ids pelones getElementById('acHizo') devuelve la PRIMERA del documento —
+   que es la de Limpieza, porque cajaUnaTarea va antes que cajaUnTipo. De ahi
+   salen dos daños: una correctiva guardada con el «qué se hizo» de otro
+   registro, o una pantalla que se queda regañando por un campo que la persona
+   sí llenó. Por eso cada caja trae el suyo — Reg, Limp, Suelta, y el id de la
+   tanda en la lista de órdenes, que puede tener dos abiertas a la vez.
+   Cada campo saca el sufijo de su propio id ('acHubo' mide 6 letras) en vez de
+   que se pegue aquí como literal: un sufijo de texto necesitaría comillas
+   dentro de un atributo dentro de una cadena, y esas comillas ya mataron la
+   app completa una vez. */
 function camposCorrectiva(ctx, sfx) {
   sfx = sfx || '';
   return '<div class="item" style="border-left:4px solid var(--rojo);margin-top:14px">' +
@@ -7576,7 +7584,7 @@ function camposCorrectiva(ctx, sfx) {
     '<label>Para que no se repita</label>' +
     '<input id="acEvitar' + sfx + '" placeholder="Si ya lo saben; si no, déjalo vacío">' +
     '<label>¿Hubo producto afectado?</label>' +
-    '<select id="acHubo' + sfx + '" onchange="verDestino(' + sfx + ')">' +
+    '<select id="acHubo' + sfx + '" onchange="verDestino(this.id.slice(6))">' +
       '<option value="no">No hubo producto afectado</option>' +
       '<option value="si">Sí, sí hubo</option></select>' +
     '<div id="acProducto' + sfx + '"></div>' +
@@ -7616,7 +7624,7 @@ function ctxDe(x, v, txt) {
 }
 
 function guardarLectura() {
-  var x = TIPO_ABIERTO, n, obs, v = null, txt = '', campo, k, k2, pasos, fuera, hizo;
+  var x = TIPO_ABIERTO, n, obs, v = null, txt = '', campo, k, cuerpo, fuera, hizo;
   if (!x) { return; }
 
   n = document.getElementById('regQuien').value;
@@ -7644,7 +7652,7 @@ function guardarLectura() {
   if (fuera && !PIDE_CORRECTIVA) {
     PIDE_CORRECTIVA = true;
     document.getElementById('regCorrectiva').innerHTML = camposCorrectiva(
-      ctxDe(x, v, txt) + '. ' + limiteTexto(x).replace(/<[^>]*>/g, ''));
+      ctxDe(x, v, txt) + '. ' + limiteTexto(x).replace(/<[^>]*>/g, ''), 'Reg');
     document.getElementById('btnAnotarReg').innerHTML = 'Anotar la lectura y lo que se hizo';
     decir('Ese valor sale <b>fuera del límite</b>. Antes de guardarlo hay que ' +
           'escribir qué se hizo — así lo pide la ley y así sirve.', true);
@@ -7652,7 +7660,7 @@ function guardarLectura() {
   }
 
   k = llaveUnica();
-  pasos = [paso('POST', '/rest/v1/rpc/rc_registrar_bitacora', {
+  cuerpo = {
     p_tipo_id: x.tipo_id,
     p_quien_nombre: n,
     p_valor_num: v,
@@ -7660,24 +7668,29 @@ function guardarLectura() {
     p_observaciones: obs,
     p_cuando_telefono: (new Date()).toISOString(),
     p_clave: k
-  }, null)];
+  };
 
   if (fuera) {
-    hizo = document.getElementById('acHizo').value;
+    hizo = document.getElementById('acHizoReg').value;
     if (!hizo) {
       decir('Falta decir <b>qué se hizo</b>. Una acción correctiva que no lo dice ' +
             'no es una acción correctiva.', true);
       return;
     }
-    k2 = llaveUnica();
-    /* La correctiva va amarrada por la CLAVE de la lectura, no por su id: el
-       teléfono todavía no sabe qué id le tocó, pero sí sabe la clave que él
-       mismo generó. Así la cadena aguanta quedarse sin señal a media captura. */
-    pasos.push(paso('POST', '/rest/v1/rpc/rc_registrar_correctiva',
-      cuerpoCorrectiva('bitacora', null, k, n, ctxDe(x, v, txt), hizo, k2), null));
+    /* UNA sola llamada, no dos pasos. Antes la correctiva iba amarrada por la
+       clave de la lectura, y aunque se mandaban juntas eran DOS
+       transacciones: la base podía quedarse con la lectura y sin la
+       correctiva. Ahora las mete juntas y un disparador diferido se niega al
+       hacer commit si se separaron — entre por donde entre. El «qué pasó» ya
+       no se manda: lo arma la base con el valor y el límite que tiene
+       guardados, que es la única versión que nadie puede maquillar. */
+    cuerpo.p_correctiva = correctivaJson('Reg');
+    cuerpo.p_correctiva.clave = llaveUnica();
   }
 
-  hacer('Registro: ' + x.que, pasos, function (ok) {
+  hacer('Registro: ' + x.que, [
+    paso('POST', '/rest/v1/rpc/rc_registrar_bitacora', cuerpo, null)
+  ], function (ok) {
     if (!ok) { return; }
     decir(fuera
       ? 'Anotada la lectura <b>y</b> lo que se hizo. Falta que alguien más lo firme.'
@@ -7686,32 +7699,55 @@ function guardarLectura() {
   });
 }
 
-/* El cuerpo de la correctiva, armado en un solo lugar: lo usan la captura de
-   la lectura y la caja de «salió fuera y nadie arregló». */
-function cuerpoCorrectiva(sobre, sobreId, claveBit, quien, quePaso, queHizo, clave, sfx) {
-  var hubo = false, dest = 'ninguno', prod = null, cuanto = null, el;
+/* Lo que la persona escribió en los campos de la correctiva, tal cual. Es el
+   UNICO lugar que los lee, porque hay dos maneras de mandarla — metida en la
+   misma llamada que la falla, y suelta por rc_registrar_correctiva — y si
+   cada una leyera los campos por su cuenta se iban a separar con el tiempo. */
+function correctivaJson(sfx) {
+  var j, el;
   sfx = sfx || '';
+  j = {
+    que_se_hizo: null,
+    para_que_no_se_repita: null,
+    hubo_producto: false,
+    destino: 'ninguno',
+    producto_afectado: null,
+    cuanto: null,
+    cuando_telefono: (new Date()).toISOString()
+  };
+  el = document.getElementById('acHizo' + sfx);
+  if (el && el.value) { j.que_se_hizo = el.value; }
+  el = document.getElementById('acEvitar' + sfx);
+  if (el && el.value) { j.para_que_no_se_repita = el.value; }
   el = document.getElementById('acHubo' + sfx);
   if (el && el.value === 'si') {
-    hubo = true;
-    dest = document.getElementById('acDestino' + sfx).value;
-    prod = document.getElementById('acQueProd' + sfx).value || null;
+    j.hubo_producto = true;
+    j.destino = document.getElementById('acDestino' + sfx).value;
+    j.producto_afectado = document.getElementById('acQueProd' + sfx).value || null;
     el = document.getElementById('acCuanto' + sfx);
-    cuanto = (el && el.value !== '') ? num(el.value) : null;
+    j.cuanto = (el && el.value !== '') ? num(el.value) : null;
   }
-  el = document.getElementById('acEvitar' + sfx);
+  return j;
+}
+
+/* El cuerpo de la correctiva SUELTA, para rc_registrar_correctiva. La usan la
+   caja de «salió fuera y nadie arregló» y la corrección de una tanda. Las dos
+   pantallas con candado ya NO pasan por aquí: mandan correctivaJson() dentro
+   de la misma llamada que guarda la falla. */
+function cuerpoCorrectiva(sobre, sobreId, claveBit, quien, quePaso, queHizo, clave, sfx) {
+  var j = correctivaJson(sfx);
   return {
     p_sobre: sobre,
     p_sobre_id: sobreId,
     p_quien_nombre: quien,
     p_que_paso: quePaso,
     p_que_se_hizo: queHizo,
-    p_para_que_no_se_repita: (el && el.value) ? el.value : null,
-    p_hubo_producto: hubo,
-    p_destino: dest,
-    p_producto_afectado: prod,
-    p_cuanto: cuanto,
-    p_cuando_telefono: (new Date()).toISOString(),
+    p_para_que_no_se_repita: j.para_que_no_se_repita,
+    p_hubo_producto: j.hubo_producto,
+    p_destino: j.destino,
+    p_producto_afectado: j.producto_afectado,
+    p_cuanto: j.cuanto,
+    p_cuando_telefono: j.cuando_telefono,
     p_clave: clave,
     p_clave_bitacora: claveBit
   };
@@ -7736,7 +7772,8 @@ function abrirCorrectiva(bitacoraId) {
     '</div>' +
     '<label>Quién lo arregló</label>' +
     '<select id="acQuien">' + opcionesPersonas(false) + '</select>' +
-    camposCorrectiva('Quedó pendiente de la lectura del ' + diaLargo(x.para_el_dia) + '.') +
+    camposCorrectiva('Quedó pendiente de la lectura del ' + diaLargo(x.para_el_dia) + '.',
+      'Suelta') +
     '<button class="p" onclick="guardarCorrectivaSuelta(' + bitacoraId + ')">Anotar lo que se hizo</button>' +
     '<button class="p g" onclick="cerrarTipo()">Volver</button>';
 
@@ -7753,7 +7790,7 @@ function guardarCorrectivaSuelta(bitacoraId) {
   if (!x) { return; }
   n = document.getElementById('acQuien').value;
   if (!n) { decir('Falta escoger quién lo arregló.', true); return; }
-  hizo = document.getElementById('acHizo').value;
+  hizo = document.getElementById('acHizoSuelta').value;
   if (!hizo) {
     decir('Falta decir <b>qué se hizo</b>. Una acción correctiva que no lo dice ' +
           'no es una acción correctiva.', true);
@@ -7763,7 +7800,8 @@ function guardarCorrectivaSuelta(bitacoraId) {
   hacer('Acción correctiva: ' + x.que, [
     paso('POST', '/rest/v1/rpc/rc_registrar_correctiva',
       cuerpoCorrectiva('bitacora', bitacoraId, null, n,
-        x.que + ' marcó ' + valorDe(x.valor_num, x.valor_texto, x.unidad), hizo, k), null)
+        x.que + ' marcó ' + valorDe(x.valor_num, x.valor_texto, x.unidad),
+        hizo, k, 'Suelta'), null)
   ], function (ok) {
     if (!ok) { return; }
     decir('Anotado. Falta que <b>alguien más</b> lo firme — quien lo arregló no ' +
