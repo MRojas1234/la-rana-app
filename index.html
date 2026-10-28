@@ -226,7 +226,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v72</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v73</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -759,6 +759,7 @@
       </div>
 
       <div class="caja oculto" id="cajaLimites"></div>
+      <div class="caja oculto" id="cajaSanit"></div>
       <div class="caja" id="cajaCapacita"></div>
       <div class="caja" id="cajaRevision"></div>
       <div class="caja" id="cajaCorrectivas"></div>
@@ -7228,6 +7229,7 @@ function ver(p) {
    no. */
 
 var REG = [], TABLERO = null, FUERA = [], CAPACITA = [], CORRECTIVAS = [];
+var TAREAS_SANIT = [], SANIT = [];
 var FILTRO_REG = '', CLASES_REG = [], TIPO_ABIERTO = null, PIDE_CORRECTIVA = false;
 
 function cargarRegistros() {
@@ -7243,6 +7245,16 @@ function cargarRegistros() {
     function (ok, d) { CORRECTIVAS = ok && d ? d : []; pintarCorrectivas(); });
   req('GET', '/rest/v1/rc_personas?select=*&activa=is.true&order=orden,nombre',
     null, function (ok, d) { PERSONAS = ok && d ? d : []; pintarRevision(); });
+  /* Declarar cual tarea lleva sanitizante es del dueno, y la base rechaza a
+     cualquier otro. Pedir estas dos listas para alguien que no puede usarlas
+     es gastarle los datos del telefono a los muchachos. */
+  if (PERFIL && PERFIL.rol === 'dueno') {
+    req('GET', '/rest/v1/rc_limpieza_tareas?select=id,que,zona,quimico,' +
+      'concentracion,critica&estado=eq.aprobada&order=id', null,
+      function (ok, d) { TAREAS_SANIT = ok && d ? d : []; pintarSanit(); });
+    req('GET', '/rest/v1/rc_limpieza_sanitizante_hoy?select=*', null,
+      function (ok, d) { SANIT = ok && d ? d : []; pintarSanit(); });
+  }
 }
 
 /* PostgREST manda los números a veces como texto. Un 0 es un límite válido y
@@ -7349,7 +7361,16 @@ function pintarTablero() {
     mosaicoReg('Gente con constancia', t.personas_capacitadas, num(t.personas_capacitadas) > 0) +
     '</div>';
 
-  if (num(t.tipos_sin_limite) > 0 || num(t.limpiezas_sin_quimico) > 0) {
+  /* Este aviso decía <<11 tareas sin el químico>> y contaba las once, aunque
+     seis no llevan sanitizante: los dumpsters, la basura de afuera, las
+     canastas, el lavamanos, el bote gris y lavar paredes. El peligro no era
+     la pena del número: era que alguien le inventara un químico a <<lavar
+     paredes>> nomás para apagarlo. Ahora cuenta sólo las que alguien declaró
+     que sí llevan, y las que nadie ha declarado salen aparte -- si no
+     salieran, cambiar el número habría cambiado un dato equivocado por un
+     punto ciego. */
+  if (num(t.tipos_sin_limite) > 0 || num(t.limpiezas_sin_quimico) > 0 ||
+      num(t.limpiezas_sin_declarar) > 0) {
     s += '<div class="item" style="border-left:4px solid var(--ambar);margin-top:12px">' +
       '<div class="n">Falta un dato que yo no puedo poner</div>' +
       (num(t.tipos_sin_limite) > 0
@@ -7358,8 +7379,15 @@ function pintarTablero() {
           'puede decir si está bien.</div>' : '') +
       (num(t.limpiezas_sin_quimico) > 0
         ? '<div class="d"><b>' + num(t.limpiezas_sin_quimico) + '</b> tarea(s) de limpieza ' +
-          'sin el químico ni su concentración. La sección 17 de la guía pide ' +
-          'las dos cosas, y fue el hallazgo crítico 7.d.</div>' : '') +
+          'que <b>sí llevan sanitizante</b> y no tienen el químico ni su ' +
+          'concentración. La sección 17 de la guía pide las dos cosas, y fue el ' +
+          'hallazgo crítico 7.d.</div>' : '') +
+      (num(t.limpiezas_sin_declarar) > 0
+        ? '<div class="d"><b>' + num(t.limpiezas_sin_declarar) + '</b> tarea(s) de limpieza ' +
+          'sin decir si llevan sanitizante o no. Hasta que alguien lo diga, la ' +
+          'app no sabe a cuáles pedirles el químico' +
+          (PERFIL && PERFIL.rol === 'dueno' ? ' — se contesta aquí abajo, en ' +
+            '<b>¿Cuáles llevan sanitizante?</b>' : '') + '.</div>' : '') +
       '</div>';
   }
 
@@ -7969,6 +7997,119 @@ function aprobarTipo(id) {
   ], function (ok) {
     if (!ok) { return; }
     decir('Aprobado. Ya sale en la lista del día con su límite.', false);
+    cargarRegistros();
+  });
+}
+
+/* ---------- ¿cuáles tareas de limpieza llevan sanitizante? ----------
+   La sección 17 de la guía pide el químico y su concentración, pero sólo de
+   las que sanitizan. Lavar paredes se hace con jabón, y pedirle unos ppm es
+   pedirle un dato que no existe.
+
+   Quién contesta: el dueño, porque este dato alimenta un contador que se le
+   enseña a un inspector. La base tiene la misma regla y rechaza a los demás,
+   así que esto de aquí es comodidad, no el candado.
+
+   Por qué no lo adivina la app: se podría buscar la palabra "sanitiz" en el
+   nombre de la tarea. Eso es una corazonada con cara de dato -- el día que
+   alguien escriba "desinfectar", el conteo miente sin avisar. */
+function declaradoDe(tareaId) {
+  var i;
+  for (i = 0; i < SANIT.length; i++) {
+    if (num(SANIT[i].tarea_id) === num(tareaId)) { return SANIT[i]; }
+  }
+  return null;
+}
+
+function pintarSanit() {
+  var c = document.getElementById('cajaSanit'), s, i, x, d, faltan;
+  if (!c) { return; }
+  if (!PERFIL || PERFIL.rol !== 'dueno' || !TAREAS_SANIT.length) {
+    c.className = 'caja oculto';
+    return;
+  }
+  c.className = 'caja';
+
+  faltan = 0;
+  for (i = 0; i < TAREAS_SANIT.length; i++) {
+    if (!declaradoDe(TAREAS_SANIT[i].id)) { faltan++; }
+  }
+
+  s = '<h2>¿Cuáles llevan sanitizante?' +
+    (faltan ? ' <span class="pill a">' + faltan + ' sin decir</span>' : '') + '</h2>' +
+    '<div class="ayuda" style="margin-bottom:12px">La sección 17 pide el ' +
+    'químico y su concentración, pero sólo de las que <b>sanitizan</b>. ' +
+    'Lavar paredes se hace con jabón: pedirle ppm sería pedir un dato que no ' +
+    'existe, y un dato inventado en un registro de inocuidad es peor que el ' +
+    'hueco. <b>Esto no se borra</b>: si te equivocas, lo vuelves a decir y los ' +
+    'dos renglones se quedan.</div>';
+
+  for (i = 0; i < TAREAS_SANIT.length; i++) {
+    x = TAREAS_SANIT[i];
+    d = declaradoDe(x.id);
+    s += '<div class="item" id="sanit' + x.id + '">' + renglonSanit(x, d) + '</div>';
+  }
+
+  c.innerHTML = s;
+}
+
+/* Se repinta el renglón, no la lista: son once tarjetas y en un teléfono
+   viejo redibujarlas todas en cada toque pierde el toque siguiente. */
+function renglonSanit(x, d) {
+  var s = '<div class="n">' + (x.critica ? '\ud83d\udd34 ' : '') + esc(x.que) + '</div>';
+  if (x.zona) { s += '<div class="d">' + esc(x.zona) + '</div>'; }
+
+  if (!d) {
+    s += '<div class="d">¿Esta tarea lleva sanitizante?</div>' +
+      '<div class="fila" style="gap:8px;margin-top:8px">' +
+      '<button class="p" style="flex:1" onclick="declararSanit(' + x.id + ',true)">' +
+        'Sí lleva</button>' +
+      '<button class="p g" style="flex:1" onclick="declararSanit(' + x.id + ',false)">' +
+        'No lleva</button></div>';
+    return s;
+  }
+
+  s += '<div class="d">' + (d.lleva
+      ? '<span class="pill v">lleva sanitizante</span>'
+      : '<span class="pill">no lleva</span>') +
+    ' — lo dijo <b>' + esc(d.quien_nombre) + '</b></div>';
+
+  if (d.lleva && !String(x.quimico || '').replace(/^\s+|\s+$/g, '')) {
+    s += '<div class="d" style="color:var(--ambar)"><b>Falta el químico y los ' +
+      'ppm</b> de ésta. Es de las que la sección 17 sí pide.</div>';
+  }
+
+  s += '<div class="fila" style="gap:8px;margin-top:8px">' +
+    '<button class="p g" style="flex:1" onclick="declararSanit(' + x.id + ',' +
+      (d.lleva ? 'false' : 'true') + ')">Estaba mal: ' +
+      (d.lleva ? 'no lleva' : 'sí lleva') + '</button></div>';
+  return s;
+}
+
+function declararSanit(tareaId, lleva) {
+  var x = null, i, cuerpo;
+  for (i = 0; i < TAREAS_SANIT.length; i++) {
+    if (num(TAREAS_SANIT[i].id) === num(tareaId)) { x = TAREAS_SANIT[i]; break; }
+  }
+  if (!x) { return; }
+  if (!PERFIL || !PERFIL.nombre) {
+    decir('No sé con qué nombre firmarlo. Vuelve a entrar.', true);
+    return;
+  }
+
+  cuerpo = { p_tarea_id: num(tareaId), p_lleva: !!lleva,
+             p_quien_nombre: PERFIL.nombre,
+             p_cuando_telefono: (new Date()).toISOString(),
+             p_clave: llaveUnica() };
+
+  hacer('Sanitizante: ' + x.que, [
+    paso('POST', '/rest/v1/rpc/rc_declarar_sanitizante', cuerpo, null)
+  ], function (ok) {
+    if (!ok) { return; }
+    decir(lleva
+      ? 'Anotado: <b>sí lleva</b>. Si todavía no tiene el químico, va a salir ' +
+        'en el aviso de arriba hasta que se lo pongas.'
+      : 'Anotado: <b>no lleva</b>. Ya no se le va a pedir el químico.', false);
     cargarRegistros();
   });
 }
