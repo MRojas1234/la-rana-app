@@ -226,7 +226,7 @@
   <header>
     <img src="logo.png" alt="">
     <div>
-      <div class="t">La Rana Snacks <span class="ver">v68</span></div>
+      <div class="t">La Rana Snacks <span class="ver">v69</span></div>
       <div class="s" id="quienSoy"></div>
     </div>
     <button class="salir" id="btnSalir">Salir</button>
@@ -250,6 +250,7 @@
          no se pica, y este es el único que se usa TODOS los días y el que
          tiene que enseñarse solo cuando llegue la inspección. -->
     <button data-p="limpieza">Limpieza</button>
+    <button data-p="registros">Registros</button>
     <button data-p="lugares">Lugares</button>
     <button data-p="inventario">Inventario</button>
     <button data-p="produccion">Producción</button>
@@ -735,6 +736,32 @@
 
       <div class="caja oculto" id="cajaBorradores"></div>
       <div class="caja oculto" id="cajaHoja"></div>
+    </section>
+
+    <!-- ---------- REGISTROS ---------- -->
+    <!-- Los registros que un inspector pide ver. El reporte del 22 de octubre
+         de 2026 dejó la sección 2 entera en N/O — no observado, que no es
+         aprobado: es que no se evaluó. La próxima vez sí se evalúa.
+         Esta pantalla NO certifica cumplimiento de FDA ni de FSMA, NO
+         sustituye al PCQI y NO inventa un solo valor sanitario. Lo que no
+         está validado sale como "pendiente de validación" — nunca como cero,
+         que se lee igual que aprobado. -->
+    <section id="p-registros" class="oculto">
+      <div class="caja" id="cajaTablero"></div>
+      <div class="caja oculto" id="cajaFuera"></div>
+      <div class="caja oculto" id="cajaUnTipo"></div>
+
+      <div class="caja" id="cajaHoyReg">
+        <h2>Lo que hay que anotar hoy</h2>
+        <div class="ayuda" id="ayudaReg"></div>
+        <div class="menu" id="filtrosReg"></div>
+        <div id="listaReg"></div>
+      </div>
+
+      <div class="caja oculto" id="cajaLimites"></div>
+      <div class="caja" id="cajaCapacita"></div>
+      <div class="caja" id="cajaRevision"></div>
+      <div class="caja" id="cajaCorrectivas"></div>
     </section>
 
     <!-- ---------- HISTORIAL ---------- -->
@@ -7048,7 +7075,8 @@ function cerrarHoja() {
 function ver(p) {
   var secs = ['inicio', 'lugares', 'inventario', 'rutas',
               'insumos', 'recetas', 'reventa', 'produccion', 'bodega',
-              'historial', 'maquila', 'costos', 'gente', 'limpieza'], i;
+              'historial', 'maquila', 'costos', 'gente', 'limpieza',
+              'registros'], i;
   for (i = 0; i < secs.length; i++) {
     document.getElementById('p-' + secs[i]).className = (secs[i] === p ? '' : 'oculto');
   }
@@ -7077,7 +7105,917 @@ function ver(p) {
   if (p === 'rutas') { cerrarRuta(); }
   if (p === 'produccion') { pintarCocinas(); }
   if (p === 'limpieza') { cerrarTarea(); cerrarHoja(); cargarLimpieza(); }
+  if (p === 'registros') { cerrarTipo(); cargarRegistros(); }
   window.scrollTo(0, 0);
+}
+
+/* ============================================================================
+   REGISTROS — lo que pide una inspección
+   ============================================================================
+   En FSMA cada punto de monitoreo necesita TRES cosas, no una:
+
+     1. monitoreo          — se hizo, y éste fue el valor
+     2. acción correctiva  — qué se hizo cuando el valor salió fuera
+     3. verificación       — alguien más confirma que el monitoreo es real
+
+   La app tenía 1 y 3, y nada más para limpieza. La 2 no existía en ninguna
+   tabla. Y es justo la que un inspector busca primero, porque es la que
+   demuestra que el sistema está vivo: un registro donde todo siempre sale
+   bien no se cree — mide que nadie está midiendo de verdad.
+
+   Las tres reglas de esta pantalla:
+
+   1. EL DÍA Y LA HORA NO SE TECLEAN. Los pone el servidor, en hora de Utah.
+   2. QUIEN MIDE NO DECLARA SI ESTÁ BIEN. La base compara contra el límite
+      guardado y ella decide. Si no hay límite, no dice nada: dice "pendiente
+      de validación", que es la verdad.
+   3. UN VALOR FUERA DE LÍMITE NO SE GUARDA SOLO. En el mismo momento se pide
+      que se escriba qué se hizo, porque después ya nadie se acuerda.
+
+   Y lo que NO hace: no inventa a qué grados debe estar un congelador, ni la
+   tolerancia de un termómetro, ni qué hacer cuando algo sale mal. Eso lo pone
+   Jesús o su PCQI, en la caja de abajo. Un valor sanitario inventado dentro
+   de un registro es peor que el hueco, porque el hueco se ve y el inventado
+   no. */
+
+var REG = [], TABLERO = null, FUERA = [], CAPACITA = [], CORRECTIVAS = [];
+var FILTRO_REG = '', CLASES_REG = [], TIPO_ABIERTO = null, PIDE_CORRECTIVA = false;
+
+function cargarRegistros() {
+  req('GET', '/rest/v1/rc_registros_hoy?select=*&order=critica.desc,clase.asc,que.asc',
+    null, function (ok, d) { REG = ok && d ? d : []; pintarReg(); pintarLimites(); });
+  req('GET', '/rest/v1/rc_tablero_inspeccion?select=*', null,
+    function (ok, d) { TABLERO = ok && d && d.length ? d[0] : null; pintarTablero(); pintarRevision(); });
+  req('GET', '/rest/v1/rc_fuera_sin_arreglar?select=*', null,
+    function (ok, d) { FUERA = ok && d ? d : []; pintarFuera(); });
+  req('GET', '/rest/v1/rc_capacitaciones?select=*&order=fecha.desc', null,
+    function (ok, d) { CAPACITA = ok && d ? d : []; pintarCapacita(); });
+  req('GET', '/rest/v1/rc_correctivas_lista?select=*&limit=40', null,
+    function (ok, d) { CORRECTIVAS = ok && d ? d : []; pintarCorrectivas(); });
+  req('GET', '/rest/v1/rc_personas?select=*&activa=is.true&order=orden,nombre',
+    null, function (ok, d) { PERSONAS = ok && d ? d : []; pintarRevision(); });
+}
+
+/* PostgREST manda los números a veces como texto. Un 0 es un límite válido y
+   `!x.minimo` lo tiraría, así que se pregunta por nulo de verdad. */
+function hayLim(v) { return v !== null && typeof v !== 'undefined' && v !== ''; }
+
+function cadaCuando(f) {
+  if (f === 'cada_4_horas') { return 'cada 4 horas, también de noche y en fin de semana'; }
+  if (f === 'cada_turno') { return 'cada turno'; }
+  if (f === 'diaria') { return 'todos los días'; }
+  if (f === 'semanal') { return 'una vez por semana'; }
+  if (f === 'mensual') { return 'una vez al mes'; }
+  if (f === 'por_recepcion') { return 'en cada recepción'; }
+  if (f === 'por_carga') { return 'en cada carga de camión'; }
+  if (f === 'continua') { return 'medición continua'; }
+  return 'cuando pasa';
+}
+
+function nombreClase(c) {
+  if (c === 'temperatura') { return 'Temperaturas'; }
+  if (c === 'calibracion') { return 'Termómetros'; }
+  if (c === 'plagas') { return 'Plagas'; }
+  if (c === 'ambiental') { return 'Ambiental'; }
+  if (c === 'salud') { return 'Salud del personal'; }
+  if (c === 'transporte') { return 'Transporte'; }
+  if (c === 'alergenos') { return 'Alérgenos'; }
+  if (c === 'equipo') { return 'Equipo'; }
+  return 'Otros';
+}
+
+/* El valor de una lectura, dicho en una sola pieza. */
+function valorDe(v, txt, unidad) {
+  if (v !== null && typeof v !== 'undefined') {
+    return String(v) + (unidad ? ' ' + unidad : '');
+  }
+  return String(txt || '');
+}
+
+/* El límite, dicho como es. Cuando no hay, se dice que no hay. */
+function limiteTexto(x) {
+  var u = x.unidad ? ' ' + x.unidad : '';
+  if (x.medida === 'si_no') {
+    if (!x.respuesta_buena) {
+      return '<b>Pendiente de validación:</b> nadie ha dicho cuál respuesta es la buena.';
+    }
+    return 'La respuesta buena es <b>' + (x.respuesta_buena === 'si' ? 'Sí' : 'No') + '</b>.';
+  }
+  if (x.medida === 'texto') { return 'Se anota tal como viene.'; }
+  if (!hayLim(x.minimo) && !hayLim(x.maximo)) {
+    return '<b>Pendiente de validación:</b> todavía no hay límite. El número se ' +
+           'guarda, pero la app <b>no puede decir</b> si está bien o mal.';
+  }
+  if (hayLim(x.minimo) && hayLim(x.maximo)) {
+    return 'Debe quedar entre <b>' + num(x.minimo) + u + '</b> y <b>' + num(x.maximo) + u + '</b>.';
+  }
+  if (hayLim(x.maximo)) { return 'No debe pasar de <b>' + num(x.maximo) + u + '</b>.'; }
+  return 'No debe bajar de <b>' + num(x.minimo) + u + '</b>.';
+}
+
+/* Lo mismo que calcula la base, calculado aquí, para poder pedir la acción
+   correctiva en el mismo momento — y sin señal. La base sigue siendo la que
+   manda: lo que ella guarde en `dentro` es lo que vale. */
+function saleFuera(x, v, txt) {
+  if (x.medida === 'si_no') {
+    return !!x.respuesta_buena && txt !== '' && txt !== x.respuesta_buena;
+  }
+  if (x.medida !== 'numero') { return false; }
+  if (!hayLim(x.minimo) && !hayLim(x.maximo)) { return false; }
+  if (hayLim(x.minimo) && v < num(x.minimo)) { return true; }
+  if (hayLim(x.maximo) && v > num(x.maximo)) { return true; }
+  return false;
+}
+
+/* ---------- el tablero: ¿estamos listos para la próxima? ---------- */
+function pintarTablero() {
+  var c = document.getElementById('cajaTablero'), t = TABLERO, p, s;
+  if (!c) { return; }
+  if (!t) {
+    c.innerHTML = '<h2>Para la próxima inspección</h2><div class="ayuda">Cargando…</div>';
+    return;
+  }
+  p = t.pcqi || {};
+
+  s = '<h2>Para la próxima inspección</h2>';
+
+  /* El PCQI va PRIMERO porque sin él no hay Food Safety Plan que valga. */
+  s += '<div class="item" style="border-left:4px solid ' +
+       (p.hay && !p.vencido ? 'var(--verde)' : 'var(--rojo)') + '">' +
+    '<div class="n">PCQI ' + (p.hay
+      ? (p.vencido ? '<span class="pill r">vencido</span>'
+                   : '<span class="pill v">registrado</span>')
+      : '<span class="pill r">no hay constancia</span>') + '</div>' +
+    '<div class="d">' + esc(p.mensaje || '') + '</div>' +
+    (!p.hay ? '<div class="ayuda">Arriba de un millón de dólares al año ' +
+      '(y la maquila cuenta) el Food Safety Plan lo tiene que vigilar un PCQI ' +
+      'con nombre y constancia. Se anota abajo, en <b>Capacitación</b>.</div>' : '') +
+    '</div>';
+
+  s += '<div class="fila" style="flex-wrap:wrap;gap:9px">' +
+    mosaicoReg('Lecturas de hoy', t.lecturas_hoy, num(t.lecturas_hoy) > 0) +
+    mosaicoReg('Limpiezas de hoy', t.limpiezas_hoy, num(t.limpiezas_hoy) > 0) +
+    mosaicoReg('Fuera, sin arreglar', t.fuera_sin_arreglar, num(t.fuera_sin_arreglar) === 0) +
+    mosaicoReg('Correctivas sin firmar', t.correctivas_sin_revisar, num(t.correctivas_sin_revisar) === 0) +
+    mosaicoReg('Gente con constancia', t.personas_capacitadas, num(t.personas_capacitadas) > 0) +
+    '</div>';
+
+  if (num(t.tipos_sin_limite) > 0 || num(t.limpiezas_sin_quimico) > 0) {
+    s += '<div class="item" style="border-left:4px solid var(--ambar);margin-top:12px">' +
+      '<div class="n">Falta un dato que yo no puedo poner</div>' +
+      (num(t.tipos_sin_limite) > 0
+        ? '<div class="d"><b>' + num(t.tipos_sin_limite) + '</b> registro(s) de números ' +
+          'sin límite. Mientras no lo tengan, la app guarda el número pero no ' +
+          'puede decir si está bien.</div>' : '') +
+      (num(t.limpiezas_sin_quimico) > 0
+        ? '<div class="d"><b>' + num(t.limpiezas_sin_quimico) + '</b> tarea(s) de limpieza ' +
+          'sin el químico ni su concentración. La sección 17 de la guía pide ' +
+          'las dos cosas, y fue el hallazgo crítico 7.d.</div>' : '') +
+      '</div>';
+  }
+
+  s += '<div class="ayuda" style="margin-top:12px">' +
+    'Esta pantalla <b>apoya</b> el cumplimiento: guarda quién hizo qué, cuándo y ' +
+    'con qué, de forma que no se puede cambiar a escondidas. <b>No certifica</b> ' +
+    'cumplimiento de FDA ni de FSMA y <b>no sustituye al PCQI</b>.</div>';
+
+  c.innerHTML = s;
+}
+
+function mosaicoReg(titulo, n, bien) {
+  return '<div class="item" style="flex:1 1 calc(50% - 5px);min-width:140px;margin:0;' +
+    'border-left:4px solid ' + (bien ? 'var(--verde)' : 'var(--ambar)') + '">' +
+    '<div style="font-size:26px;font-weight:800">' + num(n) + '</div>' +
+    '<div class="d">' + esc(titulo) + '</div></div>';
+}
+
+/* ---------- lo que salió fuera y nadie arregló ---------- */
+function pintarFuera() {
+  var c = document.getElementById('cajaFuera'), s, i, x;
+  if (!c) { return; }
+  if (!FUERA.length) { c.className = 'caja oculto'; return; }
+  s = '<h2>Salió fuera de límite y nadie anotó qué se hizo ' +
+      '<span class="pill r">' + FUERA.length + '</span></h2>' +
+    '<div class="ayuda" style="margin-bottom:12px">Esto es lo primero que ' +
+    'busca un inspector. Un valor fuera de límite sin acción correctiva dice ' +
+    'que el sistema no está vivo. Pícale a cada uno y escribe qué se hizo.</div>';
+  for (i = 0; i < FUERA.length; i++) {
+    x = FUERA[i];
+    s += '<div class="item toca" style="border-left-color:var(--rojo)" ' +
+      'onclick="abrirCorrectiva(' + x.bitacora_id + ')">' +
+      '<div class="n">' + (x.critica ? '🔴 ' : '') + esc(x.que) + '</div>' +
+      '<div class="d">Marcó <b>' + esc(valorDe(x.valor_num, x.valor_texto, x.unidad)) + '</b>' +
+        (x.donde ? ' en ' + esc(x.donde) : '') + '</div>' +
+      '<div class="d">Lo anotó <b>' + esc(x.quien_nombre) + '</b> el ' +
+        esc(diaLargo(x.para_el_dia)) +
+        (num(x.dias_sin_arreglar) > 0
+          ? ' — lleva <b>' + num(x.dias_sin_arreglar) + ' día(s)</b> así' : '') +
+        '</div>' +
+      (x.que_hacer_si_falla
+        ? '<div class="ayuda"><b>Lo que dice el procedimiento:</b> ' +
+          esc(x.que_hacer_si_falla) + '</div>' : '') +
+      '</div>';
+  }
+  c.innerHTML = s;
+  c.className = 'caja';
+}
+
+/* ---------- la lista del día ---------- */
+function pintarReg() {
+  var c = document.getElementById('listaReg'), a = document.getElementById('ayudaReg');
+  var s = '', i, cl, hechos = {}, total = {}, j;
+  if (!c) { return; }
+
+  CLASES_REG = [];
+  for (i = 0; i < REG.length; i++) {
+    cl = REG[i].clase;
+    if (!total.hasOwnProperty(cl)) { total[cl] = 0; hechos[cl] = 0; CLASES_REG.push(cl); }
+    total[cl]++;
+    if (num(REG[i].cuantos_hoy) > 0) { hechos[cl]++; }
+  }
+
+  s = '';
+  for (j = 0; j < CLASES_REG.length; j++) {
+    cl = CLASES_REG[j];
+    s += '<button class="' + (FILTRO_REG === cl ? 'on' : '') +
+      '" onclick="verClaseReg(' + j + ')">' +
+      '<div class="tt">' + esc(nombreClase(cl)) + '</div>' +
+      '<div class="ts">' + hechos[cl] + ' de ' + total[cl] + ' con algo anotado hoy</div>' +
+      '</button>';
+  }
+  if (CLASES_REG.length > 1) {
+    s += '<button class="' + (FILTRO_REG === '' ? 'on' : '') +
+      '" onclick="verClaseReg(-1)">' +
+      '<div class="tt">Todos</div>' +
+      '<div class="ts">' + REG.length + ' en total</div></button>';
+  }
+  document.getElementById('filtrosReg').innerHTML = s;
+
+  s = '';
+  for (i = 0; i < REG.length; i++) {
+    if (FILTRO_REG && REG[i].clase !== FILTRO_REG) { continue; }
+    s += renglonReg(REG[i]);
+  }
+  c.innerHTML = s || '<div class="ayuda">No hay nada de este tipo.</div>';
+
+  if (a) {
+    a.innerHTML = REG.length
+      ? 'El día y la hora los pone el servidor, en hora de Utah. ' +
+        'Lo anotado <b>no se edita ni se borra</b>: si algo sale mal se ' +
+        'escribe otro renglón y los dos se quedan.'
+      : 'Todavía no hay tipos de registro cargados.';
+  }
+}
+
+function renglonReg(x) {
+  var pill, d = '', falta = num(x.faltan_hoy), veces = num(x.veces_al_dia) || 1;
+
+  if (num(x.fuera_hoy) > 0) {
+    pill = '<span class="pill r">salió fuera</span>';
+  } else if (num(x.cuantos_hoy) === 0) {
+    pill = '<span class="pill r">falta</span>';
+  } else if (falta > 0) {
+    pill = '<span class="pill a">faltan ' + falta + ' de ' + veces + '</span>';
+  } else {
+    pill = '<span class="pill v">al día</span>';
+  }
+
+  if (num(x.cuantos_hoy) > 0) {
+    d = 'Lo último: <b>' + esc(valorDe(x.ultimo_valor, x.ultimo_texto, x.unidad)) +
+      '</b>, por ' + esc(x.ultimo_quien || 'alguien') + '.';
+  }
+
+  return '<div class="item toca" onclick="abrirTipo(' + x.tipo_id + ')">' +
+    '<div class="n">' + (x.critica ? '🔴 ' : '') + esc(x.que) + '</div>' +
+    '<div class="d">' + esc(x.donde || 'toda la planta') + ' · ' +
+      esc(cadaCuando(x.frecuencia)) +
+      (x.seccion_guia ? ' · guía §' + esc(x.seccion_guia) : '') + '</div>' +
+    '<div style="margin-top:7px">' + pill +
+      (x.limite_pendiente ? ' <span class="pill a">sin límite</span>' : '') +
+      (x.estado === 'borrador' ? ' <span class="pill">sin aprobar</span>' : '') +
+      '</div>' +
+    (d ? '<div class="d">' + d + '</div>' : '') +
+    '</div>';
+}
+
+function verClaseReg(j) {
+  FILTRO_REG = (j < 0) ? '' : CLASES_REG[j];
+  cerrarTipo();
+  pintarReg();
+}
+
+/* ---------- anotar una lectura ---------- */
+function abrirTipo(id) {
+  var x = null, i, s;
+  for (i = 0; i < REG.length; i++) {
+    if (REG[i].tipo_id === id) { x = REG[i]; break; }
+  }
+  if (!x) { return; }
+  TIPO_ABIERTO = x;
+  PIDE_CORRECTIVA = false;
+
+  s = '<h2>' + (x.critica ? '🔴 ' : '') + esc(x.que) + '</h2>' +
+    '<div class="d">' + esc(x.donde || 'toda la planta') + ' · ' +
+      esc(cadaCuando(x.frecuencia)) +
+      (num(x.veces_al_dia) > 1
+        ? ' · van ' + num(x.cuantos_hoy) + ' de ' + num(x.veces_al_dia) + ' hoy'
+        : '') + '</div>';
+
+  if (x.por_que) {
+    s += '<div class="ayuda" style="margin:9px 0"><b>Por qué se pide:</b> ' +
+      esc(x.por_que) + '</div>';
+  }
+
+  s += '<div class="item" style="border-left:4px solid ' +
+    (x.limite_pendiente || (x.medida === 'si_no' && !x.respuesta_buena)
+      ? 'var(--ambar)' : 'var(--verde)') + '">' +
+    '<div class="d">' + limiteTexto(x) + '</div></div>';
+
+  if (x.medida === 'numero') {
+    s += '<label>Qué marcaba el aparato' +
+      (x.unidad ? ' (' + esc(x.unidad) + ')' : '') + '</label>' +
+      '<input id="regValor" type="number" step="any" inputmode="decimal" ' +
+      'placeholder="El número, tal como lo dice">';
+  } else if (x.medida === 'si_no') {
+    s += '<label>' + esc(x.que) + '</label>' +
+      '<select id="regTexto">' +
+      '<option value="">— escoge —</option>' +
+      '<option value="si">Sí</option>' +
+      '<option value="no">No</option></select>';
+  } else {
+    s += '<label>Qué dice el resultado</label>' +
+      '<input id="regTexto" placeholder="Tal como viene del laboratorio">';
+  }
+
+  s += '<label>Quién lo anota</label>' +
+    '<select id="regQuien">' + opcionesPersonas(false) + '</select>' +
+    '<label>Algo que agregar</label>' +
+    '<input id="regObs" placeholder="Si no hay nada, déjalo vacío">' +
+    '<div id="regCorrectiva"></div>' +
+    '<button class="p" id="btnAnotarReg" onclick="guardarLectura()">Anotar</button>' +
+    '<button class="p g" onclick="cerrarTipo()">Volver</button>';
+
+  document.getElementById('cajaUnTipo').innerHTML = s;
+  document.getElementById('cajaUnTipo').className = 'caja';
+  /* Lo que se abre tiene que quedar DONDE SE VE. */
+  window.scrollTo(0, 0);
+}
+
+function cerrarTipo() {
+  TIPO_ABIERTO = null; PIDE_CORRECTIVA = false;
+  var c = document.getElementById('cajaUnTipo');
+  if (c) { c.className = 'caja oculto'; }
+}
+
+/* Los campos de la acción correctiva, que salen DENTRO del mismo panel en el
+   momento en que el valor sale fuera. No es una pantalla aparte a propósito:
+   si se deja para después, nadie se acuerda de qué se hizo. */
+function camposCorrectiva(ctx) {
+  return '<div class="item" style="border-left:4px solid var(--rojo);margin-top:14px">' +
+    '<div class="n">Hay que anotar qué se hizo</div>' +
+    '<div class="d">' + esc(ctx) + '</div>' +
+    '<div class="ayuda" style="margin:8px 0">La ley pide tres cosas, no una: ' +
+    'qué se hizo, qué pasó con el producto, y cómo se evita que se repita. ' +
+    'Escríbelo ahora, que es cuando se sabe.</div>' +
+    '<label>Qué se hizo</label>' +
+    '<input id="acHizo" placeholder="Lo que se hizo en ese momento">' +
+    '<label>Para que no se repita</label>' +
+    '<input id="acEvitar" placeholder="Si ya lo saben; si no, déjalo vacío">' +
+    '<label>¿Hubo producto afectado?</label>' +
+    '<select id="acHubo" onchange="verDestino()">' +
+      '<option value="no">No hubo producto afectado</option>' +
+      '<option value="si">Sí, sí hubo</option></select>' +
+    '<div id="acProducto"></div>' +
+    '</div>';
+}
+
+function verDestino() {
+  var c = document.getElementById('acProducto');
+  if (!c) { return; }
+  c.innerHTML = (document.getElementById('acHubo').value === 'si')
+    ? '<label>Qué producto</label>' +
+      '<input id="acQueProd" placeholder="Como le dicen">' +
+      '<label>Cuánto</label>' +
+      '<input id="acCuanto" type="number" step="any" inputmode="decimal" ' +
+      'placeholder="Bolsas o cajas">' +
+      '<label>Qué pasó con él</label>' +
+      '<select id="acDestino">' +
+        '<option value="retenido">Se apartó, sin soltar</option>' +
+        '<option value="reprocesado">Se volvió a procesar</option>' +
+        '<option value="destruido">Se tiró</option>' +
+        '<option value="devuelto">Se regresó al proveedor</option>' +
+        '<option value="liberado">Se soltó</option>' +
+      '</select>' +
+      '<div class="ayuda">Si se soltó, tiene que haber una razón escrita arriba ' +
+      'en «qué se hizo». Soltar producto afectado sin explicación es el renglón ' +
+      'que un inspector señala.</div>'
+    : '';
+}
+
+/* El contexto de la correctiva, en una frase. Es un hecho, no una opinión:
+   el valor y el límite, nada más. */
+function ctxDe(x, v, txt) {
+  return x.medida === 'numero'
+    ? x.que + ' marcó ' + v + (x.unidad ? ' ' + x.unidad : '')
+    : x.que + ': contestó ' + (txt === 'si' ? 'sí' : 'no');
+}
+
+function guardarLectura() {
+  var x = TIPO_ABIERTO, n, obs, v = null, txt = '', campo, k, k2, pasos, fuera, hizo;
+  if (!x) { return; }
+
+  n = document.getElementById('regQuien').value;
+  if (!n) {
+    decir('Falta escoger quién lo anota. <b>Sin nombre no es un registro</b>, es un papel.', true);
+    return;
+  }
+
+  if (x.medida === 'numero') {
+    campo = document.getElementById('regValor').value;
+    if (campo === '' || campo === null) {
+      decir('Falta el número que marcaba el aparato.', true); return;
+    }
+    v = num(campo);
+  } else {
+    txt = document.getElementById('regTexto').value;
+    if (!txt) { decir('Falta la respuesta.', true); return; }
+  }
+
+  obs = document.getElementById('regObs').value;
+  fuera = saleFuera(x, v, txt);
+
+  /* Primera pasada: si sale fuera, se piden los campos de la correctiva y NO
+     se guarda todavía. Segunda pasada: ya están, y se manda todo junto. */
+  if (fuera && !PIDE_CORRECTIVA) {
+    PIDE_CORRECTIVA = true;
+    document.getElementById('regCorrectiva').innerHTML = camposCorrectiva(
+      ctxDe(x, v, txt) + '. ' + limiteTexto(x).replace(/<[^>]*>/g, ''));
+    document.getElementById('btnAnotarReg').innerHTML = 'Anotar la lectura y lo que se hizo';
+    decir('Ese valor sale <b>fuera del límite</b>. Antes de guardarlo hay que ' +
+          'escribir qué se hizo — así lo pide la ley y así sirve.', true);
+    return;
+  }
+
+  k = llaveUnica();
+  pasos = [paso('POST', '/rest/v1/rpc/rc_registrar_bitacora', {
+    p_tipo_id: x.tipo_id,
+    p_quien_nombre: n,
+    p_valor_num: v,
+    p_valor_texto: txt || null,
+    p_observaciones: obs,
+    p_cuando_telefono: (new Date()).toISOString(),
+    p_clave: k
+  }, null)];
+
+  if (fuera) {
+    hizo = document.getElementById('acHizo').value;
+    if (!hizo) {
+      decir('Falta decir <b>qué se hizo</b>. Una acción correctiva que no lo dice ' +
+            'no es una acción correctiva.', true);
+      return;
+    }
+    k2 = llaveUnica();
+    /* La correctiva va amarrada por la CLAVE de la lectura, no por su id: el
+       teléfono todavía no sabe qué id le tocó, pero sí sabe la clave que él
+       mismo generó. Así la cadena aguanta quedarse sin señal a media captura. */
+    pasos.push(paso('POST', '/rest/v1/rpc/rc_registrar_correctiva',
+      cuerpoCorrectiva('bitacora', null, k, n, ctxDe(x, v, txt), hizo, k2), null));
+  }
+
+  hacer('Registro: ' + x.que, pasos, function (ok) {
+    if (!ok) { return; }
+    decir(fuera
+      ? 'Anotada la lectura <b>y</b> lo que se hizo. Falta que alguien más lo firme.'
+      : 'Anotado: <b>' + esc(x.que) + '</b>, por ' + esc(n) + '.', false);
+    cerrarTipo(); cargarRegistros();
+  });
+}
+
+/* El cuerpo de la correctiva, armado en un solo lugar: lo usan la captura de
+   la lectura y la caja de «salió fuera y nadie arregló». */
+function cuerpoCorrectiva(sobre, sobreId, claveBit, quien, quePaso, queHizo, clave) {
+  var hubo = false, dest = 'ninguno', prod = null, cuanto = null, el;
+  el = document.getElementById('acHubo');
+  if (el && el.value === 'si') {
+    hubo = true;
+    dest = document.getElementById('acDestino').value;
+    prod = document.getElementById('acQueProd').value || null;
+    el = document.getElementById('acCuanto');
+    cuanto = (el && el.value !== '') ? num(el.value) : null;
+  }
+  el = document.getElementById('acEvitar');
+  return {
+    p_sobre: sobre,
+    p_sobre_id: sobreId,
+    p_quien_nombre: quien,
+    p_que_paso: quePaso,
+    p_que_se_hizo: queHizo,
+    p_para_que_no_se_repita: (el && el.value) ? el.value : null,
+    p_hubo_producto: hubo,
+    p_destino: dest,
+    p_producto_afectado: prod,
+    p_cuanto: cuanto,
+    p_cuando_telefono: (new Date()).toISOString(),
+    p_clave: clave,
+    p_clave_bitacora: claveBit
+  };
+}
+
+/* ---------- arreglar una que ya quedó fuera ---------- */
+function abrirCorrectiva(bitacoraId) {
+  var x = null, i, s;
+  for (i = 0; i < FUERA.length; i++) {
+    if (FUERA[i].bitacora_id === bitacoraId) { x = FUERA[i]; break; }
+  }
+  if (!x) { return; }
+
+  s = '<h2>Qué se hizo con esto</h2>' +
+    '<div class="item" style="border-left:4px solid var(--rojo)">' +
+    '<div class="n">' + esc(x.que) + '</div>' +
+    '<div class="d">Marcó <b>' + esc(valorDe(x.valor_num, x.valor_texto, x.unidad)) +
+      '</b>, lo anotó ' + esc(x.quien_nombre) + ' el ' + esc(diaLargo(x.para_el_dia)) + '.</div>' +
+    (x.que_hacer_si_falla
+      ? '<div class="ayuda"><b>Lo que dice el procedimiento:</b> ' +
+        esc(x.que_hacer_si_falla) + '</div>' : '') +
+    '</div>' +
+    '<label>Quién lo arregló</label>' +
+    '<select id="acQuien">' + opcionesPersonas(false) + '</select>' +
+    camposCorrectiva('Quedó pendiente de la lectura del ' + diaLargo(x.para_el_dia) + '.') +
+    '<button class="p" onclick="guardarCorrectivaSuelta(' + bitacoraId + ')">Anotar lo que se hizo</button>' +
+    '<button class="p g" onclick="cerrarTipo()">Volver</button>';
+
+  document.getElementById('cajaUnTipo').innerHTML = s;
+  document.getElementById('cajaUnTipo').className = 'caja';
+  window.scrollTo(0, 0);
+}
+
+function guardarCorrectivaSuelta(bitacoraId) {
+  var x = null, i, n, hizo, k;
+  for (i = 0; i < FUERA.length; i++) {
+    if (FUERA[i].bitacora_id === bitacoraId) { x = FUERA[i]; break; }
+  }
+  if (!x) { return; }
+  n = document.getElementById('acQuien').value;
+  if (!n) { decir('Falta escoger quién lo arregló.', true); return; }
+  hizo = document.getElementById('acHizo').value;
+  if (!hizo) {
+    decir('Falta decir <b>qué se hizo</b>. Una acción correctiva que no lo dice ' +
+          'no es una acción correctiva.', true);
+    return;
+  }
+  k = llaveUnica();
+  hacer('Acción correctiva: ' + x.que, [
+    paso('POST', '/rest/v1/rpc/rc_registrar_correctiva',
+      cuerpoCorrectiva('bitacora', bitacoraId, null, n,
+        x.que + ' marcó ' + valorDe(x.valor_num, x.valor_texto, x.unidad), hizo, k), null)
+  ], function (ok) {
+    if (!ok) { return; }
+    decir('Anotado. Falta que <b>alguien más</b> lo firme — quien lo arregló no ' +
+          'se puede firmar a sí mismo.', false);
+    cerrarTipo(); cargarRegistros();
+  });
+}
+
+/* ---------- las correctivas, y su firma ---------- */
+function pintarCorrectivas() {
+  var c = document.getElementById('cajaCorrectivas'), s, i, a;
+  if (!c) { return; }
+  s = '<h2>Lo que se hizo cuando algo salió mal</h2>';
+  if (!CORRECTIVAS.length) {
+    c.innerHTML = s + '<div class="ayuda">Todavía no hay ninguna. ' +
+      'Eso está bien si de verdad nada ha salido fuera de límite. ' +
+      'Si es porque nadie está midiendo, se ve arriba.</div>';
+    return;
+  }
+  s += '<div class="ayuda" style="margin-bottom:12px">Ninguna se puede editar ni ' +
+    'borrar. La firma la tiene que poner <b>alguien distinto</b> del que la hizo: ' +
+    'que la firme el mismo es la misma afirmación dos veces, no una verificación.</div>';
+  for (i = 0; i < CORRECTIVAS.length; i++) {
+    a = CORRECTIVAS[i];
+    s += '<div class="item">' +
+      '<div class="n">' + esc(a.de_que || a.sobre) + '</div>' +
+      '<div class="d"><b>Qué pasó:</b> ' + esc(a.que_paso) + '</div>' +
+      '<div class="d"><b>Qué se hizo:</b> ' + esc(a.que_se_hizo) + '</div>' +
+      (a.para_que_no_se_repita
+        ? '<div class="d"><b>Para que no se repita:</b> ' +
+          esc(a.para_que_no_se_repita) + '</div>' : '') +
+      (a.hubo_producto
+        ? '<div class="d"><b>Producto:</b> ' + esc(a.producto_afectado || 'sí hubo') +
+          (a.cuanto ? ', ' + num(a.cuanto) : '') + ' — ' + esc(a.destino) + '</div>'
+        : '<div class="d">No hubo producto afectado.</div>') +
+      '<div class="d">La hizo <b>' + esc(a.quien_nombre) + '</b> el ' +
+        esc(diaLargo(a.para_el_dia)) + '</div>' +
+      '<div style="margin-top:7px">' + (a.ya_revisada
+        ? '<span class="pill v">firmada por ' + esc(a.verificada_nombre || 'alguien') + '</span>'
+        : '<span class="pill a">falta que alguien más la firme</span>') + '</div>' +
+      (!a.ya_revisada
+        ? '<label>Quién la revisa</label>' +
+          '<select id="revAc' + a.id + '">' + opcionesPersonas(true) + '</select>' +
+          '<button class="p chico" style="margin-top:9px;width:auto" ' +
+          'onclick="firmarCorrectiva(' + a.id + ')">Ya la revisé</button>'
+        : '') +
+      '</div>';
+  }
+  c.innerHTML = s;
+}
+
+function firmarCorrectiva(id) {
+  var n = document.getElementById('revAc' + id).value;
+  if (!n) { decir('Falta escoger quién la revisa.', true); return; }
+  hacer('Firmar correctiva', [
+    paso('POST', '/rest/v1/rpc/rc_verificar_correctiva',
+      { p_id: id, p_quien_nombre: n }, null)
+  ], function (ok) {
+    if (!ok) { return; }
+    decir('Firmada por <b>' + esc(n) + '</b>.', false);
+    cargarRegistros();
+  });
+}
+
+/* ---------- los límites: lo único que yo no puedo llenar ---------- */
+function pintarLimites() {
+  var c = document.getElementById('cajaLimites'), s, i, x, faltan = [];
+  if (!c) { return; }
+  for (i = 0; i < REG.length; i++) {
+    if (REG[i].estado === 'borrador') { faltan.push(REG[i]); }
+  }
+  if (!PERFIL || PERFIL.rol !== 'dueno' || !faltan.length) {
+    c.className = 'caja oculto'; return;
+  }
+
+  s = '<h2>Falta el dato que sólo tú tienes ' +
+      '<span class="pill a">' + faltan.length + '</span></h2>' +
+    '<div class="ayuda" style="margin-bottom:12px">' +
+    'Éstos salieron de la guía de UDAF y del reporte del 22 de octubre. ' +
+    '<b>Los dejé vacíos a propósito.</b> A cuántos grados debe estar un ' +
+    'congelador, cuánto puede desviarse un termómetro y qué hacer cuando algo ' +
+    'sale mal no lo puede poner un programa: lo pone quien tiene la ' +
+    'responsabilidad. Un valor sanitario inventado dentro de un registro es ' +
+    'peor que el hueco, porque el hueco se ve y el inventado no.<br><br>' +
+    'Mientras estén aquí, la app guarda el número pero <b>no dice si está bien</b>. ' +
+    'Una vez aprobado ya no se edita: se saca la versión siguiente.</div>';
+
+  for (i = 0; i < faltan.length; i++) {
+    x = faltan[i];
+    s += '<div class="item">' +
+      '<div class="n">' + (x.critica ? '🔴 ' : '') + esc(x.que) + '</div>' +
+      '<div class="d">' + esc(x.donde || 'toda la planta') + ' · ' +
+        esc(cadaCuando(x.frecuencia)) +
+        (x.seccion_guia ? ' · guía §' + esc(x.seccion_guia) : '') + '</div>' +
+      (x.por_que ? '<div class="ayuda" style="margin:7px 0">' + esc(x.por_que) + '</div>' : '');
+
+    if (x.medida === 'numero') {
+      s += '<div class="fila">' +
+        '<div><label>Mínimo' + (x.unidad ? ' (' + esc(x.unidad) + ')' : '') + '</label>' +
+          '<input id="limMin' + x.tipo_id + '" type="number" step="any" inputmode="decimal" ' +
+          'value="' + (hayLim(x.minimo) ? esc(String(x.minimo)) : '') + '"></div>' +
+        '<div><label>Máximo' + (x.unidad ? ' (' + esc(x.unidad) + ')' : '') + '</label>' +
+          '<input id="limMax' + x.tipo_id + '" type="number" step="any" inputmode="decimal" ' +
+          'value="' + (hayLim(x.maximo) ? esc(String(x.maximo)) : '') + '"></div>' +
+        '</div>' +
+        '<div class="ayuda">Puedes poner uno solo de los dos si nada más hay un lado.</div>';
+    } else if (x.medida === 'si_no') {
+      s += '<label>¿Cuál respuesta es la buena?</label>' +
+        '<select id="limResp' + x.tipo_id + '">' +
+        '<option value="">— escoge —</option>' +
+        '<option value="si"' + (x.respuesta_buena === 'si' ? ' selected' : '') + '>Sí</option>' +
+        '<option value="no"' + (x.respuesta_buena === 'no' ? ' selected' : '') + '>No</option>' +
+        '</select>';
+    }
+
+    s += '<label>Qué hacer si sale mal</label>' +
+      '<input id="limQue' + x.tipo_id + '" placeholder="El procedimiento, en tus palabras" ' +
+      'value="' + esc(x.que_hacer_si_falla || '') + '">' +
+      '<div class="ayuda">La ley (117.150) pide tener esto escrito <b>antes</b>, ' +
+      'no después. Sin esto no se puede aprobar.</div>' +
+      '<div class="fila" style="margin-top:12px">' +
+        '<button class="p g" style="margin-top:0" onclick="guardarLimite(' + x.tipo_id + ')">Guardar</button>' +
+        '<button class="p" style="margin-top:0" onclick="aprobarTipo(' + x.tipo_id + ')">Apruebo éste</button>' +
+      '</div>' +
+      '</div>';
+  }
+  c.innerHTML = s;
+  c.className = 'caja';
+}
+
+function guardarLimite(id) {
+  var x = null, i, cuerpo = {}, el;
+  for (i = 0; i < REG.length; i++) { if (REG[i].tipo_id === id) { x = REG[i]; break; } }
+  if (!x) { return; }
+
+  if (x.medida === 'numero') {
+    el = document.getElementById('limMin' + id);
+    cuerpo.minimo = (el.value === '') ? null : num(el.value);
+    el = document.getElementById('limMax' + id);
+    cuerpo.maximo = (el.value === '') ? null : num(el.value);
+    if (cuerpo.minimo !== null && cuerpo.maximo !== null && cuerpo.minimo > cuerpo.maximo) {
+      decir('El mínimo salió más grande que el máximo. Revisa los dos números.', true);
+      return;
+    }
+  } else if (x.medida === 'si_no') {
+    el = document.getElementById('limResp' + id);
+    cuerpo.respuesta_buena = el.value || null;
+  }
+  el = document.getElementById('limQue' + id);
+  cuerpo.que_hacer_si_falla = el.value || null;
+
+  hacer('Guardar límite: ' + x.que, [
+    paso('PATCH', '/rest/v1/rc_bitacora_tipos?id=eq.' + id, cuerpo, null)
+  ], function (ok) {
+    if (!ok) { return; }
+    decir('Guardado. Todavía <b>no está aprobado</b>: revisa que quedó bien y ' +
+          'pícale a «Apruebo éste».', false);
+    cargarRegistros();
+  });
+}
+
+function aprobarTipo(id) {
+  hacer('Aprobar tipo de registro', [
+    paso('POST', '/rest/v1/rpc/rc_aprobar_tipo_bitacora', { p_id: id }, null)
+  ], function (ok) {
+    if (!ok) { return; }
+    decir('Aprobado. Ya sale en la lista del día con su límite.', false);
+    cargarRegistros();
+  });
+}
+
+/* ---------- capacitación, y el PCQI ---------- */
+function pintarCapacita() {
+  var c = document.getElementById('cajaCapacita'), s, i, k, hoy;
+  if (!c) { return; }
+  hoy = (new Date()).toISOString().substring(0, 10);
+
+  s = '<h2>Capacitación y constancias</h2>' +
+    '<div class="ayuda" style="margin-bottom:12px">La sección 3 de la guía pide ' +
+    'capacitación de cada empleado. Y arriba de un millón al año, el Food Safety ' +
+    'Plan lo tiene que vigilar un <b>PCQI</b>: una persona con nombre y ' +
+    'constancia. Aquí se anota la de él y la de todos. No se puede borrar ni ' +
+    'editar: si hay un error se anota otra y las dos se quedan.</div>';
+
+  if (CAPACITA.length) {
+    for (i = 0; i < CAPACITA.length; i++) {
+      k = CAPACITA[i];
+      s += '<div class="item"' +
+        (k.clase === 'pcqi' ? ' style="border-left:4px solid var(--verde)"' : '') + '>' +
+        '<div class="n">' + esc(k.persona_nombre) +
+          (k.clase === 'pcqi' ? ' <span class="pill v">PCQI</span>' : '') + '</div>' +
+        '<div class="d">' + esc(k.titulo) + '</div>' +
+        '<div class="d">' + esc(diaLargo(k.fecha)) +
+          (k.quien_la_dio ? ' · ' + esc(k.quien_la_dio) : '') +
+          (k.horas ? ' · ' + num(k.horas) + ' h' : '') +
+          (k.constancia ? ' · constancia ' + esc(k.constancia) : '') + '</div>' +
+        (k.vence
+          ? '<div style="margin-top:7px">' + (k.vence < hoy
+              ? '<span class="pill r">venció el ' + esc(k.vence) + '</span>'
+              : '<span class="pill v">vigente hasta ' + esc(k.vence) + '</span>') + '</div>'
+          : '') +
+        '</div>';
+    }
+  } else {
+    s += '<div class="item" style="border-left:4px solid var(--rojo)">' +
+      '<div class="n">No hay ninguna constancia registrada</div>' +
+      '<div class="d">Ni del PCQI ni de nadie. En la inspección del 22 de octubre ' +
+      'la sección de controles preventivos salió <b>no observada</b> — que no es ' +
+      'aprobada: es que no se evaluó.</div></div>';
+  }
+
+  s += '<h2 style="margin-top:20px">Anotar una constancia</h2>' +
+    '<label>De quién es</label>' +
+    '<input id="capQuien" placeholder="Nombre completo, como viene en la constancia">' +
+    '<label>Qué curso</label>' +
+    '<select id="capClase">' +
+      '<option value="pcqi">PCQI — Preventive Controls Qualified Individual</option>' +
+      '<option value="manejo_alimentos">Manejo de alimentos (food handler)</option>' +
+      '<option value="inocuidad_interna">Capacitación interna de inocuidad</option>' +
+      '<option value="alergenos">Alérgenos</option>' +
+      '<option value="haccp">HACCP</option>' +
+      '<option value="acidificados">Alimentos acidificados</option>' +
+      '<option value="defensa_alimentaria">Defensa alimentaria</option>' +
+      '<option value="transporte">Transporte sanitario</option>' +
+      '<option value="plagas">Control de plagas</option>' +
+      '<option value="otra">Otra</option>' +
+    '</select>' +
+    '<label>Cómo se llama</label>' +
+    '<input id="capTitulo" placeholder="El nombre que trae la constancia">' +
+    '<label>Quién la dio</label>' +
+    '<input id="capDio" placeholder="La escuela o quien la impartió">' +
+    '<div class="fila">' +
+      '<div><label>Cuándo fue</label><input id="capFecha" type="date"></div>' +
+      '<div><label>Cuándo vence</label><input id="capVence" type="date"></div>' +
+    '</div>' +
+    '<div class="ayuda">Si no vence, deja la segunda vacía.</div>' +
+    '<label>Folio de la constancia</label>' +
+    '<input id="capFolio" placeholder="El número, si trae">' +
+    '<button class="p" onclick="guardarCapacitacion()">Anotar la constancia</button>';
+
+  c.innerHTML = s;
+}
+
+function guardarCapacitacion() {
+  var n, ti, fe, cuerpo;
+  n  = document.getElementById('capQuien').value;
+  ti = document.getElementById('capTitulo').value;
+  fe = document.getElementById('capFecha').value;
+  if (!n) { decir('Falta de quién es la constancia.', true); return; }
+  if (!ti) { decir('Falta cómo se llama el curso.', true); return; }
+  if (!fe) {
+    decir('Falta la fecha. Una capacitación sin fecha no se puede verificar.', true);
+    return;
+  }
+  cuerpo = {
+    p_persona_nombre: n,
+    p_clase: document.getElementById('capClase').value,
+    p_titulo: ti,
+    p_fecha: fe,
+    p_quien_la_dio: document.getElementById('capDio').value || null,
+    p_vence: document.getElementById('capVence').value || null,
+    p_constancia: document.getElementById('capFolio').value || null,
+    p_registrado_nombre: (PERFIL && PERFIL.nombre) ? PERFIL.nombre : null
+  };
+  hacer('Capacitación: ' + n, [
+    paso('POST', '/rest/v1/rpc/rc_registrar_capacitacion', cuerpo, null)
+  ], function (ok) {
+    if (!ok) { return; }
+    decir('Anotada la constancia de <b>' + esc(n) + '</b>.', false);
+    cargarRegistros();
+  });
+}
+
+/* ---------- la revisión del periodo ---------- */
+function pintarRevision() {
+  var c = document.getElementById('cajaRevision'), s, hoy, hace7, d;
+  if (!c) { return; }
+  d = new Date();
+  hoy = d.toISOString().substring(0, 10);
+  hace7 = (new Date(d.getTime() - 6 * 864e5)).toISOString().substring(0, 10);
+
+  s = '<h2>Revisar y firmar los registros</h2>' +
+    '<div class="ayuda" style="margin-bottom:12px">Ésta es la tercera pata: ' +
+    'alguien distinto revisa que los registros sean reales y firma el periodo. ' +
+    'No es por renglón — <b>treinta firmas al día nadie las da, y las que se ' +
+    'dieran serían de mentira</b>. Es el supervisor firmando la semana, que es ' +
+    'lo que de verdad pasa.' +
+    (TABLERO && TABLERO.ultima_revision
+      ? '<br><br>La última revisión firmada llega hasta el <b>' +
+        esc(diaLargo(TABLERO.ultima_revision)) + '</b>.'
+      : '<br><br><b>Todavía no hay ninguna revisión firmada.</b>') +
+    '</div>' +
+    '<div class="fila">' +
+      '<div><label>Desde</label><input id="revDesde" type="date" value="' + hace7 + '"></div>' +
+      '<div><label>Hasta</label><input id="revHasta" type="date" value="' + hoy + '"></div>' +
+    '</div>' +
+    '<label>Quién revisa</label>' +
+    '<select id="revQuien">' + opcionesPersonas(true) + '</select>' +
+    '<label>Cómo quedó</label>' +
+    '<select id="revComo" onchange="verQueEncontre()">' +
+      '<option value="si">Todo en orden</option>' +
+      '<option value="no">Encontré algo</option>' +
+    '</select>' +
+    '<div id="revHallazgo"></div>' +
+    '<button class="p" onclick="guardarRevisionPeriodo()">Firmar la revisión</button>';
+  c.innerHTML = s;
+}
+
+function verQueEncontre() {
+  var c = document.getElementById('revHallazgo');
+  if (!c) { return; }
+  c.innerHTML = (document.getElementById('revComo').value === 'no')
+    ? '<label>Qué encontraste</label>' +
+      '<input id="revQue" placeholder="Lo que viste, aunque sea incómodo">' +
+      '<div class="ayuda">Una revisión que siempre dice «todo en orden» no se ' +
+      'cree. Lo que se escribe aquí es lo que hace creíble todo lo de arriba.</div>'
+    : '';
+}
+
+function guardarRevisionPeriodo() {
+  var n, desde, hasta, bien, que, el;
+  n = document.getElementById('revQuien').value;
+  if (!n) { decir('Falta escoger quién revisa.', true); return; }
+  desde = document.getElementById('revDesde').value;
+  hasta = document.getElementById('revHasta').value;
+  if (!desde || !hasta) { decir('Faltan las fechas del periodo.', true); return; }
+  if (hasta < desde) {
+    decir('El «hasta» quedó antes del «desde». Revisa las fechas.', true); return;
+  }
+  bien = document.getElementById('revComo').value === 'si';
+  el = document.getElementById('revQue');
+  que = bien ? null : (el ? el.value : '');
+  if (!bien && !que) { decir('Si encontraste algo, escribe qué fue.', true); return; }
+
+  hacer('Revisión ' + desde + ' a ' + hasta, [
+    paso('POST', '/rest/v1/rpc/rc_registrar_revision', {
+      p_quien_nombre: n,
+      p_desde: desde,
+      p_hasta: hasta,
+      p_que_encontre: que,
+      p_todo_en_orden: bien,
+      p_clave: llaveUnica()
+    }, null)
+  ], function (ok) {
+    if (!ok) { return; }
+    decir('Firmada la revisión por <b>' + esc(n) + '</b>.', false);
+    cargarRegistros();
+  });
 }
 
 /* Los botones del menú de entrada llevan a su pestaña. */
